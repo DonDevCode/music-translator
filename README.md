@@ -1,12 +1,12 @@
 # Music Translator
 
-A Discord bot that recognizes music links (Spotify, Apple Music, YouTube Music, …) in chat and replies with links to the same track on other platforms.
+A Discord bot that recognizes music links (~~Spotify~~, Apple Music, YouTube Music, …) in chat and replies with links to the same track on other platforms.
 
 ## Setup
 
 1. Create an application and bot at <https://discord.com/developers/applications> and enable the **Message Content** intent.
 2. Create a YouTube Data API v3 key in the [Google Cloud Console](https://console.cloud.google.com/apis/library/youtube.googleapis.com).
-3. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` and `YOUTUBE_API_KEY`.
+3. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` and `YOUTUBE_API_KEY`. Without `YOUTUBE_API_KEY` YouTube Music is disabled, which leaves the bot with no platform to translate to until another one is added.
 4. Run with [just](https://github.com/casey/just), which loads `.env` automatically:
    ```sh
    just run

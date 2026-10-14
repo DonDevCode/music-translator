@@ -3,6 +3,7 @@ package bot
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -34,13 +35,14 @@ func New(cfg *config.Config) (*Bot, error) {
 		discordgo.IntentsMessageContent
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	b := &Bot{
-		session: s,
-		platforms: []platform.Platform{
-			applemusic.New(httpClient),
-			youtubemusic.New(httpClient, cfg.YouTubeAPIKey),
-		},
+	platforms := []platform.Platform{applemusic.New(httpClient)}
+	if cfg.YouTubeAPIKey != "" {
+		platforms = append(platforms, youtubemusic.New(httpClient, cfg.YouTubeAPIKey))
+	} else {
+		log.Println("YOUTUBE_API_KEY is not set, YouTube Music is disabled")
 	}
+
+	b := &Bot{session: s, platforms: platforms}
 	s.AddHandler(b.onReady)
 	s.AddHandler(b.onMessageCreate)
 

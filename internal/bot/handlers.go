@@ -26,6 +26,10 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 	if m.Author == nil || m.Author.Bot {
 		return
 	}
+	// With a single platform there is nothing to translate to.
+	if len(b.platforms) < 2 {
+		return
+	}
 
 	for _, link := range platform.FindLinks(m.Content, b.platforms, maxLinksPerMessage) {
 		reply, err := b.translate(link)

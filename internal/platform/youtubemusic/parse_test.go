@@ -41,6 +41,11 @@ func TestParseSnippet(t *testing.T) {
 			want: platform.Track{Title: "Song", Artists: []string{"Artist"}, Year: 2021},
 		},
 		{
+			name: "topic channel without auto-generated description",
+			in:   snippet{Title: "Bohemian Rhapsody - Remastered 2011", ChannelTitle: "Queen - Topic"},
+			want: platform.Track{Title: "Bohemian Rhapsody - Remastered 2011", Artists: []string{"Queen"}},
+		},
+		{
 			name: "official video with en dash",
 			in: snippet{
 				Title:        "Queen – Bohemian Rhapsody (Official Video Remastered)",

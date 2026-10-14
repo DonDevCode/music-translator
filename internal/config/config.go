@@ -9,7 +9,7 @@ import (
 // Config holds runtime settings for the bot.
 type Config struct {
 	DiscordToken  string
-	YouTubeAPIKey string
+	YouTubeAPIKey string // optional; YouTube Music is disabled without it
 }
 
 // Load reads the configuration from environment variables.
@@ -21,9 +21,6 @@ func Load() (*Config, error) {
 
 	if cfg.DiscordToken == "" {
 		return nil, errors.New("DISCORD_TOKEN is not set")
-	}
-	if cfg.YouTubeAPIKey == "" {
-		return nil, errors.New("YOUTUBE_API_KEY is not set")
 	}
 
 	return cfg, nil

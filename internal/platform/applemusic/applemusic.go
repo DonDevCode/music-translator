@@ -106,7 +106,7 @@ func (r result) track() *platform.Track {
 	return &platform.Track{
 		Title:   r.TrackName,
 		Artists: []string{r.ArtistName},
-		Year:    parseYear(r.ReleaseDate),
+		Year:    platform.ParseYear(r.ReleaseDate),
 		URL:     cleanTrackURL(r.TrackViewURL),
 	}
 }
@@ -258,18 +258,6 @@ func (c *Client) get(ctx context.Context, path string, q url.Values) ([]result, 
 		}
 	}
 	return songs, nil
-}
-
-// parseYear extracts the year from an RFC 3339 date like "1975-10-31T12:00:00Z".
-func parseYear(date string) int {
-	if len(date) < 4 {
-		return 0
-	}
-	year, err := strconv.Atoi(date[:4])
-	if err != nil {
-		return 0
-	}
-	return year
 }
 
 // cleanTrackURL drops tracking parameters (e.g. "uo") but keeps the track

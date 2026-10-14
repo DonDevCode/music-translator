@@ -2,6 +2,7 @@ package platform
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -39,7 +40,7 @@ func titleScore(a, b string) int {
 		return 4
 	case key(baseTitle(a)) != "" && key(baseTitle(a)) == key(baseTitle(b)):
 		return 3
-	case containsEither(key(baseTitle(a)), key(baseTitle(b))):
+	case containsEither(words(baseTitle(a)), words(baseTitle(b))):
 		return 1
 	}
 	return 0
@@ -47,7 +48,8 @@ func titleScore(a, b string) int {
 
 // artistScore checks whether the artist lists overlap. Platforms disagree on
 // how to list multiple artists ("A & B" vs. "A", "B"), so names are compared
-// against the joined list of the other side.
+// against the joined list of the other side, as whole words so that "Queen"
+// doesn't match "Queensrÿche".
 func artistScore(a, b []string) int {
 	if len(a) == 0 || len(b) == 0 {
 		return 0
@@ -56,14 +58,14 @@ func artistScore(a, b []string) int {
 		return 2
 	}
 
-	joinedA, joinedB := key(strings.Join(a, " ")), key(strings.Join(b, " "))
+	joinedA, joinedB := words(strings.Join(a, " ")), words(strings.Join(b, " "))
 	for _, artist := range a {
-		if k := key(artist); k != "" && strings.Contains(joinedB, k) {
+		if containsWords(joinedB, words(artist)) {
 			return 1
 		}
 	}
 	for _, artist := range b {
-		if k := key(artist); k != "" && strings.Contains(joinedA, k) {
+		if containsWords(joinedA, words(artist)) {
 			return 1
 		}
 	}
@@ -88,9 +90,31 @@ func key(s string) string {
 	return b.String()
 }
 
-func containsEither(a, b string) bool {
-	if a == "" || b == "" {
+// words splits s at whitespace and reduces each word with key, so "Don't"
+// and "AC/DC" stay single words.
+func words(s string) []string {
+	var ws []string
+	for _, f := range strings.Fields(s) {
+		if k := key(f); k != "" {
+			ws = append(ws, k)
+		}
+	}
+	return ws
+}
+
+// containsWords reports whether sub appears as a contiguous run of words in s.
+func containsWords(s, sub []string) bool {
+	if len(sub) == 0 {
 		return false
 	}
-	return strings.Contains(a, b) || strings.Contains(b, a)
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if slices.Equal(s[i:i+len(sub)], sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsEither(a, b []string) bool {
+	return containsWords(a, b) || containsWords(b, a)
 }

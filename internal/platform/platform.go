@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -87,4 +88,17 @@ func FindLinks(content string, platforms []Platform, limit int) []Link {
 	}
 
 	return links
+}
+
+// ParseYear extracts the year from a date starting with "YYYY", such as
+// "1975-10-31T12:00:00Z". It returns 0 if there is none.
+func ParseYear(date string) int {
+	if len(date) < 4 {
+		return 0
+	}
+	year, err := strconv.Atoi(date[:4])
+	if err != nil {
+		return 0
+	}
+	return year
 }

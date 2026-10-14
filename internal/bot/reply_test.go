@@ -62,7 +62,7 @@ func TestFormatReply(t *testing.T) {
 				{youtube, nil, fmt.Errorf("searching: %w", &platform.RateLimitError{API: "YouTube"})},
 				{spotify, nil, errors.New("connection refused")},
 			},
-			want: "**Song** – Artist · 2000\nYouTube API Rate Limit reached\nNot found on Spotify",
+			want: "**Song** – Artist · 2000\nYouTube API Rate Limit reached\nCouldn't search Spotify",
 		},
 		{
 			name:    "unknown year",

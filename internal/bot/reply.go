@@ -44,6 +44,8 @@ func formatReply(source *platform.Track, results []result) string {
 			fmt.Fprintf(&b, "%s: %s", r.platform.Name(), r.track.URL)
 		case errors.As(r.err, &rateLimitErr):
 			b.WriteString(rateLimitErr.Error())
+		case r.err != nil:
+			fmt.Fprintf(&b, "Couldn't search %s", r.platform.Name())
 		default:
 			fmt.Fprintf(&b, "Not found on %s", r.platform.Name())
 		}
