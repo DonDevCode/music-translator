@@ -20,3 +20,7 @@ internal/config/    environment-based configuration
 internal/bot/       Discord session and event handlers
 internal/platform/  music platform abstraction
 ```
+
+## Notes
+
+- **Spotify support is postponed.** The Spotify Web API requires the developer account owner to have Spotify Premium, so Spotify links aren't supported yet.
