@@ -3,15 +3,21 @@ package bot
 
 import (
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/DonDevCode/music-translator/internal/config"
+	"github.com/DonDevCode/music-translator/internal/platform"
+	"github.com/DonDevCode/music-translator/internal/platform/applemusic"
+	"github.com/DonDevCode/music-translator/internal/platform/youtubemusic"
 )
 
 // Bot wraps a Discord session.
 type Bot struct {
-	session *discordgo.Session
+	session   *discordgo.Session
+	platforms []platform.Platform
 }
 
 // New creates a Bot from the given configuration.
@@ -27,7 +33,14 @@ func New(cfg *config.Config) (*Bot, error) {
 		discordgo.IntentsDirectMessages |
 		discordgo.IntentsMessageContent
 
-	b := &Bot{session: s}
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	b := &Bot{
+		session: s,
+		platforms: []platform.Platform{
+			applemusic.New(httpClient),
+			youtubemusic.New(httpClient, cfg.YouTubeAPIKey),
+		},
+	}
 	s.AddHandler(b.onReady)
 	s.AddHandler(b.onMessageCreate)
 
