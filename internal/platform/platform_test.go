@@ -21,6 +21,8 @@ func (f fakePlatform) ParseURL(u *url.URL) (string, bool) {
 
 func (f fakePlatform) Lookup(context.Context, string) (*Track, error) { return nil, ErrNotFound }
 
+func (f fakePlatform) Search(context.Context, *Track) (*Track, error) { return nil, ErrNotFound }
+
 func TestFindLinks(t *testing.T) {
 	a := fakePlatform{name: "A", host: "a.test"}
 	b := fakePlatform{name: "B", host: "b.test"}

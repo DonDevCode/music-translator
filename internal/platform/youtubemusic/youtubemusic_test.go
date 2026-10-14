@@ -91,3 +91,98 @@ func TestLookup(t *testing.T) {
 		t.Errorf("Lookup of unknown video: err = %v, want ErrNotFound", err)
 	}
 }
+
+// Search results, with titles HTML-escaped like the real API does. The music
+// video ranks first, but the auto-generated track should be preferred.
+const searchFixture = `{
+  "items": [
+    {"id": {"videoId": "fJ9rUzIMcZQ"}, "snippet": {"title": "Queen – Bohemian Rhapsody (Official Video Remastered)", "channelTitle": "Queen Official"}},
+    {"id": {"videoId": "5zLnaNY58j8"}, "snippet": {"title": "Queen - Bohemian Rhapsody (Lyrics)", "channelTitle": "7clouds Rock"}},
+    {"id": {"videoId": "yk3prd8GER4"}, "snippet": {"title": "Bohemian Rhapsody", "channelTitle": "Queen - Topic"}},
+    {"id": {"videoId": "xxxxxxxxxxx"}, "snippet": {"title": "Don&#39;t Stop Me Now", "channelTitle": "Queen - Topic"}}
+  ]
+}`
+
+func TestSearch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if r.URL.Path != "/search" || q.Get("key") != "secret" || q.Get("type") != "video" {
+			t.Errorf("unexpected request %s", r.URL)
+		}
+		w.Write([]byte(searchFixture))
+	}))
+	defer srv.Close()
+
+	c := New(srv.Client(), "secret")
+	c.baseURL = srv.URL
+
+	tests := []struct {
+		title   string
+		wantURL string // "" for ErrNotFound
+	}{
+		{"Bohemian Rhapsody", "https://music.youtube.com/watch?v=yk3prd8GER4"},
+		{"Don't Stop Me Now", "https://music.youtube.com/watch?v=xxxxxxxxxxx"},
+		{"Radio Ga Ga", ""},
+	}
+
+	for _, tt := range tests {
+		got, err := c.Search(context.Background(), &platform.Track{Title: tt.title, Artists: []string{"Queen"}})
+		if tt.wantURL == "" {
+			if !errors.Is(err, platform.ErrNotFound) {
+				t.Errorf("Search(%q): err = %v, want ErrNotFound", tt.title, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("Search(%q): %v", tt.title, err)
+			continue
+		}
+		if got.URL != tt.wantURL {
+			t.Errorf("Search(%q) = %s, want %s", tt.title, got.URL, tt.wantURL)
+		}
+	}
+}
+
+func TestRateLimit(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		body    string
+		limited bool
+	}{
+		{"quota exceeded", http.StatusForbidden, `{"error":{"code":403,"errors":[{"domain":"youtube.quota","reason":"quotaExceeded"}]}}`, true},
+		{"too many requests", http.StatusTooManyRequests, ``, true},
+		{"api disabled", http.StatusForbidden, `{"error":{"code":403,"errors":[{"domain":"usageLimits","reason":"accessNotConfigured"}]}}`, false},
+		{"bad key", http.StatusBadRequest, `{"error":{"code":400,"errors":[{"domain":"usageLimits","reason":"keyInvalid"}]}}`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			c := New(srv.Client(), "secret")
+			c.baseURL = srv.URL
+
+			for name, call := range map[string]func() error{
+				"Lookup": func() error { _, err := c.Lookup(context.Background(), "kM0Fpbz0W8U"); return err },
+				"Search": func() error {
+					_, err := c.Search(context.Background(), &platform.Track{Title: "Song", Artists: []string{"Artist"}})
+					return err
+				},
+			} {
+				err := call()
+				var rateLimitErr *platform.RateLimitError
+				if errors.As(err, &rateLimitErr) != tt.limited {
+					t.Errorf("%s: err = %v, want rate limited = %v", name, err, tt.limited)
+				}
+				if err == nil {
+					t.Errorf("%s: err = nil, want an error", name)
+				}
+			}
+		})
+	}
+}
