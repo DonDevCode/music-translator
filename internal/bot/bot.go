@@ -3,15 +3,22 @@ package bot
 
 import (
 	"fmt"
+	"log"
+	"net/http"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/DonDevCode/music-translator/internal/config"
+	"github.com/DonDevCode/music-translator/internal/platform"
+	"github.com/DonDevCode/music-translator/internal/platform/applemusic"
+	"github.com/DonDevCode/music-translator/internal/platform/youtubemusic"
 )
 
 // Bot wraps a Discord session.
 type Bot struct {
-	session *discordgo.Session
+	session   *discordgo.Session
+	platforms []platform.Platform
 }
 
 // New creates a Bot from the given configuration.
@@ -27,7 +34,15 @@ func New(cfg *config.Config) (*Bot, error) {
 		discordgo.IntentsDirectMessages |
 		discordgo.IntentsMessageContent
 
-	b := &Bot{session: s}
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	platforms := []platform.Platform{applemusic.New(httpClient)}
+	if cfg.YouTubeAPIKey != "" {
+		platforms = append(platforms, youtubemusic.New(httpClient, cfg.YouTubeAPIKey))
+	} else {
+		log.Println("YOUTUBE_API_KEY is not set, YouTube Music is disabled")
+	}
+
+	b := &Bot{session: s, platforms: platforms}
 	s.AddHandler(b.onReady)
 	s.AddHandler(b.onMessageCreate)
 
