@@ -33,14 +33,16 @@ func BestMatch(want *Track, candidates []*Track) *Track {
 
 // titleScore compares titles, ignoring case and punctuation. Bracketed parts
 // like "(Remastered)" only break ties, so "Song (Live)" prefers "Song (Live)"
-// but still matches "Song".
+// but still matches "Song". Unbracketed version suffixes like "Song
+// Remastered 2011" match weakly; other extra words mean a different song.
 func titleScore(a, b string) int {
 	switch {
 	case key(a) != "" && key(a) == key(b):
 		return 4
 	case key(baseTitle(a)) != "" && key(baseTitle(a)) == key(baseTitle(b)):
 		return 3
-	case containsEither(words(baseTitle(a)), words(baseTitle(b))):
+	case extendsWithVersion(words(baseTitle(a)), words(baseTitle(b))) ||
+		extendsWithVersion(words(baseTitle(b)), words(baseTitle(a))):
 		return 1
 	}
 	return 0
@@ -115,6 +117,34 @@ func containsWords(s, sub []string) bool {
 	return false
 }
 
-func containsEither(a, b []string) bool {
-	return containsWords(a, b) || containsWords(b, a)
+// versionWords describe a recording or release rather than the song itself.
+var versionWords = map[string]bool{
+	"remaster": true, "remastered": true, "live": true, "version": true,
+	"edit": true, "mix": true, "remix": true, "acoustic": true, "mono": true,
+	"stereo": true, "radio": true, "extended": true, "explicit": true,
+	"clean": true, "instrumental": true, "demo": true, "single": true,
+	"album": true, "original": true, "deluxe": true, "edition": true,
+}
+
+// extendsWithVersion reports whether long is title followed only by version
+// words and numbers, as in "Song Remastered 2011" for "Song".
+func extendsWithVersion(long, title []string) bool {
+	if len(title) == 0 || len(long) <= len(title) || !slices.Equal(long[:len(title)], title) {
+		return false
+	}
+	for _, w := range long[len(title):] {
+		if !versionWords[w] && !isNumber(w) {
+			return false
+		}
+	}
+	return true
+}
+
+func isNumber(s string) bool {
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }

@@ -72,6 +72,16 @@ func TestBestMatch(t *testing.T) {
 			wantURL:    "Song Remastered 2011|Artist",
 		},
 		{
+			name:       "title contained in other song",
+			want:       track("Love", "Queen"),
+			candidates: []*Track{track("Somebody to Love", "Queen")},
+		},
+		{
+			name:       "title is prefix of other song",
+			want:       track("Love", "The Beatles"),
+			candidates: []*Track{track("Love Me Do", "The Beatles")},
+		},
+		{
 			name:       "title and artist only share a prefix",
 			want:       track("Intro", "Queen"),
 			candidates: []*Track{track("Introduction", "Queensrÿche")},

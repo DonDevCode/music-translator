@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -150,6 +151,23 @@ func (c *Client) Search(ctx context.Context, t *platform.Track) (*platform.Track
 		return best, nil
 	}
 
+	// The iTunes API already found no match, so the website is only a
+	// best-effort second try and its failures count as not found. Rate
+	// limits still apply to the iTunes API as a whole and are reported.
+	best, err := c.searchFallback(ctx, t, term)
+	if err != nil {
+		if _, ok := platform.AsRateLimitError(err); ok {
+			return nil, err
+		}
+		log.Printf("Apple Music website search for %q: %v", term, err)
+		return nil, platform.ErrNotFound
+	}
+	return best, nil
+}
+
+// searchFallback searches the Apple Music website and looks up the tracks
+// it finds. It returns ErrNotFound if none match t.
+func (c *Client) searchFallback(ctx context.Context, t *platform.Track, term string) (*platform.Track, error) {
 	ids, err := c.searchWebsite(ctx, term)
 	if err != nil {
 		return nil, err
@@ -158,7 +176,7 @@ func (c *Client) Search(ctx context.Context, t *platform.Track) (*platform.Track
 		return nil, platform.ErrNotFound
 	}
 
-	results, err = c.get(ctx, "/lookup", url.Values{
+	results, err := c.get(ctx, "/lookup", url.Values{
 		"id":      {strings.Join(ids, ",")},
 		"country": {searchStorefront},
 		"entity":  {"song"},
@@ -243,6 +261,9 @@ func (c *Client) get(ctx context.Context, path string, q url.Values) ([]result, 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if platform.IsITunesRateLimited(resp) {
+			return nil, &platform.RateLimitError{API: "iTunes"}
+		}
 		return nil, fmt.Errorf("itunes %s: unexpected status %s", path, resp.Status)
 	}
 

@@ -13,16 +13,6 @@ import (
 // ErrNotFound is returned by Lookup when the platform has no such track.
 var ErrNotFound = errors.New("track not found")
 
-// RateLimitError is returned when an API refuses requests because its rate
-// limit or quota is used up. Its message is meant to be shown to users.
-type RateLimitError struct {
-	API string // e.g. "YouTube"
-}
-
-func (e *RateLimitError) Error() string {
-	return e.API + " API Rate Limit reached"
-}
-
 // Track is a song as known to a single platform.
 type Track struct {
 	Title   string

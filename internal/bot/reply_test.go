@@ -56,6 +56,12 @@ func TestFormatReply(t *testing.T) {
 			want:    `**\*NSYNC\_Song** – A\|B · 2000` + "\nNot found on Apple Music",
 		},
 		{
+			name:    "masked link in artist",
+			source:  &platform.Track{Title: "Song", Artists: []string{"[Click here](https://evil.example)"}, Year: 2000},
+			results: []result{{apple, nil, nil}},
+			want:    `**Song** – \[Click here\](https://evil.example) · 2000` + "\nNot found on Apple Music",
+		},
+		{
 			name:   "rate limited",
 			source: &platform.Track{Title: "Song", Artists: []string{"Artist"}, Year: 2000},
 			results: []result{

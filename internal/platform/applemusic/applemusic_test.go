@@ -158,3 +158,47 @@ func TestSearch(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchWebsiteFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search":
+			w.Write([]byte(searchFixture))
+		case "/us/search":
+			http.Error(w, "blocked", http.StatusForbidden)
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.Client())
+	c.baseURL = srv.URL
+	c.webBaseURL = srv.URL
+
+	_, err := c.Search(context.Background(), &platform.Track{Title: "ZickeZackeZecken", Artists: []string{"Swiss & Die Andern"}})
+	if !errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("Search: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRateLimit(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+
+		c := New(srv.Client())
+		c.baseURL = srv.URL
+		c.webBaseURL = srv.URL
+
+		_, lookupErr := c.Lookup(context.Background(), "us/6781024437")
+		_, searchErr := c.Search(context.Background(), &platform.Track{Title: "Song", Artists: []string{"Artist"}})
+		for name, err := range map[string]error{"Lookup": lookupErr, "Search": searchErr} {
+			if _, ok := platform.AsRateLimitError(err); !ok {
+				t.Errorf("%s with status %d: err = %v, want rate limited", name, status, err)
+			}
+		}
+		srv.Close()
+	}
+}

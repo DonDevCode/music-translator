@@ -65,6 +65,11 @@ func TestParseSnippet(t *testing.T) {
 			want: platform.Track{Title: "This Is What You Came For", Artists: []string{"Calvin Harris", "Rihanna"}},
 		},
 		{
+			name: "unbracketed feat before bracketed part",
+			in:   snippet{Title: "Artist - Song ft. X (Live)", ChannelTitle: "Artist"},
+			want: platform.Track{Title: "Song (Live)", Artists: []string{"Artist", "X"}},
+		},
+		{
 			name: "feat on artist side",
 			in:   snippet{Title: "Artist ft. Guest - Song", ChannelTitle: "Artist"},
 			want: platform.Track{Title: "Song", Artists: []string{"Artist", "Guest"}},

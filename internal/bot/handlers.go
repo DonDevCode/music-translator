@@ -1,8 +1,6 @@
 package bot
 
 import (
-	"context"
-	"errors"
 	"log"
 	"sync"
 	"time"
@@ -31,17 +29,37 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 		return
 	}
 
-	for _, link := range platform.FindLinks(m.Content, b.platforms, maxLinksPerMessage) {
-		reply, err := b.translate(link)
+	// Links are independent, so they are resolved concurrently, but the
+	// replies are sent in the order the links appear.
+	links := platform.FindLinks(m.Content, b.platforms, maxLinksPerMessage)
+	replies := make([]string, len(links))
+	errs := make([]error, len(links))
+	var wg sync.WaitGroup
+	for i, link := range links {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			log.Printf("Looking up %s track %s...", link.Platform.Name(), link.ID)
+			replies[i], errs[i] = b.translate(link)
+			log.Printf("Looked up %s track %s: %v", link.Platform.Name(), link.ID, errs[i])
+		}()
+	}
+	wg.Wait()
+
+	sentRateLimits := map[string]bool{}
+	for i, link := range links {
+		reply, err := replies[i], errs[i]
 		if err != nil {
 			log.Printf("Looking up %s track %s: %v", link.Platform.Name(), link.ID, err)
 
-			// Tell users why the bot didn't answer. Other errors stay silent,
-			// since a reply without links isn't useful.
-			var rateLimitErr *platform.RateLimitError
-			if !errors.As(err, &rateLimitErr) {
+			// Tell users why the bot didn't answer, once per API and message.
+			// Other errors stay silent, since a reply without links isn't
+			// useful.
+			rateLimitErr, ok := platform.AsRateLimitError(err)
+			if !ok || sentRateLimits[rateLimitErr.API] {
 				continue
 			}
+			sentRateLimits[rateLimitErr.API] = true
 			reply = rateLimitErr.Error()
 		}
 
@@ -55,43 +73,4 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 			log.Printf("Replying to message %s: %v", m.ID, err)
 		}
 	}
-}
-
-// translate looks up the linked track, searches for it on all other
-// platforms and returns the reply text.
-func (b *Bot) translate(link platform.Link) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), linkTimeout)
-	defer cancel()
-
-	source, err := link.Platform.Lookup(ctx, link.ID)
-	if err != nil {
-		return "", err
-	}
-
-	var results []result
-	for _, p := range b.platforms {
-		if p != link.Platform {
-			results = append(results, result{platform: p})
-		}
-	}
-
-	var wg sync.WaitGroup
-	for i := range results {
-		wg.Add(1)
-		go func(r *result) {
-			defer wg.Done()
-			track, err := r.platform.Search(ctx, source)
-			if err != nil {
-				if !errors.Is(err, platform.ErrNotFound) {
-					log.Printf("Searching %s for %q: %v", r.platform.Name(), source.Title, err)
-					r.err = err
-				}
-				return
-			}
-			r.track = track
-		}(&results[i])
-	}
-	wg.Wait()
-
-	return formatReply(source, results), nil
 }

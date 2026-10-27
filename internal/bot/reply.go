@@ -1,7 +1,6 @@
 package bot
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -16,8 +15,10 @@ type result struct {
 }
 
 // markdownEscaper escapes characters that Discord would treat as formatting.
+// Escaping square brackets is enough to break masked links "[text](url)".
 var markdownEscaper = strings.NewReplacer(
 	`\`, `\\`, `*`, `\*`, `_`, `\_`, `~`, `\~`, "`", "\\`", `|`, `\|`,
+	`[`, `\[`, `]`, `\]`,
 )
 
 // formatReply describes the source track and links to it on other platforms:
@@ -38,11 +39,11 @@ func formatReply(source *platform.Track, results []result) string {
 
 	for _, r := range results {
 		b.WriteString("\n")
-		var rateLimitErr *platform.RateLimitError
+		rateLimitErr, rateLimited := platform.AsRateLimitError(r.err)
 		switch {
 		case r.track != nil:
 			fmt.Fprintf(&b, "%s: %s", r.platform.Name(), r.track.URL)
-		case errors.As(r.err, &rateLimitErr):
+		case rateLimited:
 			b.WriteString(rateLimitErr.Error())
 		case r.err != nil:
 			fmt.Fprintf(&b, "Couldn't search %s", r.platform.Name())

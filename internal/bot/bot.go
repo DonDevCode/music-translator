@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -34,7 +33,8 @@ func New(cfg *config.Config) (*Bot, error) {
 		discordgo.IntentsDirectMessages |
 		discordgo.IntentsMessageContent
 
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	// Requests are bounded by linkTimeout through their context.
+	httpClient := &http.Client{}
 	platforms := []platform.Platform{applemusic.New(httpClient)}
 	if cfg.YouTubeAPIKey != "" {
 		platforms = append(platforms, youtubemusic.New(httpClient, cfg.YouTubeAPIKey))

@@ -138,7 +138,7 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		if isRateLimited(resp) {
+		if platform.IsYouTubeRateLimited(resp) {
 			return &platform.RateLimitError{API: "YouTube"}
 		}
 		return fmt.Errorf("youtube %s: unexpected status %s", path, resp.Status)
@@ -152,41 +152,4 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 
 func trackURL(videoID string) string {
 	return "https://music.youtube.com/watch?v=" + videoID
-}
-
-// Error reasons the API uses when the daily quota or a rate limit is used up.
-var rateLimitReasons = map[string]bool{
-	"quotaExceeded":         true,
-	"rateLimitExceeded":     true,
-	"userRateLimitExceeded": true,
-	"dailyLimitExceeded":    true,
-}
-
-// isRateLimited reports whether an error response is about quota or rate
-// limits. Other errors share the same status code (e.g. 403 for a disabled
-// API), so the reason in the body is checked.
-func isRateLimited(resp *http.Response) bool {
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return true
-	}
-	if resp.StatusCode != http.StatusForbidden {
-		return false
-	}
-
-	var body struct {
-		Error struct {
-			Errors []struct {
-				Reason string `json:"reason"`
-			} `json:"errors"`
-		} `json:"error"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return false
-	}
-	for _, e := range body.Error.Errors {
-		if rateLimitReasons[e.Reason] {
-			return true
-		}
-	}
-	return false
 }

@@ -11,8 +11,10 @@ import (
 var (
 	// Bracketed title suffixes like "(Official Video)" or "[Lyrics]".
 	tagPattern = regexp.MustCompile(`(?i)\s*[(\[][^)\]]*\b(official|video|audio|lyrics?|visuali[sz]er|hd|hq|4k|remaster(ed)?|m/?v)\b[^)\]]*[)\]]`)
-	// Featured artists, optionally bracketed: "(feat. X)", "ft. X".
-	featPattern = regexp.MustCompile(`(?i)\s*[(\[]?\b(?:feat\.?|ft\.?|featuring)\s+([^)\]]+?)\s*(?:[)\]]|$)`)
+	// Featured artists, bracketed ("(feat. X)") or not ("ft. X"). Without
+	// brackets the names end before the next bracketed part, as in
+	// "Song ft. X (Live)".
+	featPattern = regexp.MustCompile(`(?i)\s*(?:[(\[]\b(?:feat\.?|ft\.?|featuring)\s+([^)\]]+?)\s*(?:[)\]]|$)|\b(?:feat\.?|ft\.?|featuring)\s+([^()\[\]]*[^()\[\]\s]))`)
 	// "Artist - Title" separators, including en and em dashes.
 	separatorPattern = regexp.MustCompile(`\s[-–—]\s`)
 	// Channel name suffixes that aren't part of the artist name.
@@ -150,6 +152,10 @@ func cutFeatured(s string) (rest, featured string) {
 	if m == nil {
 		return strings.TrimSpace(s), ""
 	}
-	rest = strings.TrimSpace(s[:m[0]] + " " + s[m[1]:])
-	return rest, strings.TrimSpace(s[m[2]:m[3]])
+	rest = strings.TrimSpace(strings.TrimSpace(s[:m[0]]) + " " + strings.TrimSpace(s[m[1]:]))
+	// Exactly one of the bracketed and unbracketed groups matched.
+	if m[2] >= 0 {
+		return rest, strings.TrimSpace(s[m[2]:m[3]])
+	}
+	return rest, strings.TrimSpace(s[m[4]:m[5]])
 }
