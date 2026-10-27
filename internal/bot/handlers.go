@@ -39,9 +39,7 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			log.Printf("Looking up %s track %s...", link.Platform.Name(), link.ID)
 			replies[i], errs[i] = b.translate(link)
-			log.Printf("Looked up %s track %s: %v", link.Platform.Name(), link.ID, errs[i])
 		}()
 	}
 	wg.Wait()
