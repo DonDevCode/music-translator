@@ -53,9 +53,10 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 		if err != nil {
 			log.Printf("Looking up %s %s %s: %v", link.Platform.Name(), kindName(link.Kind), link.ID, err)
 
-			// Tell users why the bot didn't answer, once per API and message.
-			// Other errors stay silent, since a reply without links isn't
-			// useful.
+			// Tell users why the bot didn't answer, with at most one such
+			// notice per API and message. Replies to other links may still
+			// mention the same rate limit for their searches. Other errors
+			// stay silent, since a reply without links isn't useful.
 			rateLimitErr, ok := platform.AsRateLimitError(err)
 			if !ok || sentRateLimits[rateLimitErr.API] {
 				continue

@@ -24,8 +24,12 @@ func (b *Bot) translate(link platform.Link) (string, error) {
 		return "", err
 	}
 
-	results := searchAll(ctx, b.targets(link), source.Title, func(p platform.Platform) (*platform.Track, error) {
-		return p.Search(ctx, source)
+	results := searchAll(ctx, b.targets(link), source.Title, func(p platform.Platform) (string, int, error) {
+		track, err := p.Search(ctx, source)
+		if err != nil {
+			return "", 0, err
+		}
+		return track.URL, track.Year, nil
 	})
 	return formatReply(source, results), nil
 }
@@ -36,14 +40,12 @@ func (b *Bot) translateAlbum(ctx context.Context, link platform.Link) (string, e
 		return "", err
 	}
 
-	// The reply only needs the link and year of what was found, which an
-	// album shares with a track.
-	results := searchAll(ctx, b.targets(link), source.Title, func(p platform.Platform) (*platform.Track, error) {
+	results := searchAll(ctx, b.targets(link), source.Title, func(p platform.Platform) (string, int, error) {
 		album, err := p.(platform.AlbumSearcher).SearchAlbum(ctx, source)
 		if err != nil {
-			return nil, err
+			return "", 0, err
 		}
-		return &platform.Track{Year: album.Year, URL: album.URL}, nil
+		return album.URL, album.Year, nil
 	})
 	return formatAlbumReply(source, results), nil
 }
@@ -64,9 +66,9 @@ func (b *Bot) targets(link platform.Link) []platform.Platform {
 	return targets
 }
 
-// searchAll runs search on all platforms concurrently. title is only used
-// for logging.
-func searchAll(ctx context.Context, platforms []platform.Platform, title string, search func(platform.Platform) (*platform.Track, error)) []result {
+// searchAll runs search on all platforms concurrently. search returns the
+// link and year of what it found. title is only used for logging.
+func searchAll(ctx context.Context, platforms []platform.Platform, title string, search func(platform.Platform) (url string, year int, err error)) []result {
 	results := make([]result, len(platforms))
 	var wg sync.WaitGroup
 	for i, p := range platforms {
@@ -74,7 +76,7 @@ func searchAll(ctx context.Context, platforms []platform.Platform, title string,
 		wg.Add(1)
 		go func(r *result) {
 			defer wg.Done()
-			track, err := search(r.platform)
+			url, year, err := search(r.platform)
 			if err != nil {
 				if !errors.Is(err, platform.ErrNotFound) {
 					log.Printf("Searching %s for %q: %v", r.platform.Name(), title, err)
@@ -82,7 +84,7 @@ func searchAll(ctx context.Context, platforms []platform.Platform, title string,
 				}
 				return
 			}
-			r.track = track
+			r.url, r.year = url, year
 		}(&results[i])
 	}
 	wg.Wait()

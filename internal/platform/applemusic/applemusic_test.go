@@ -182,6 +182,33 @@ func TestSearchWebsiteFailure(t *testing.T) {
 	}
 }
 
+func TestSearchWebsiteTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search":
+			w.Write([]byte(searchFixture))
+		case "/us/search":
+			// The time for the link runs out during the website search.
+			cancel()
+			http.Error(w, "slow", http.StatusServiceUnavailable)
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.Client())
+	c.baseURL = srv.URL
+	c.webBaseURL = srv.URL
+
+	_, err := c.Search(ctx, &platform.Track{Title: "ZickeZackeZecken", Artists: []string{"Swiss & Die Andern"}})
+	if err == nil || errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("Search: err = %v, want an error other than ErrNotFound", err)
+	}
+}
+
 func TestRateLimit(t *testing.T) {
 	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -245,6 +272,9 @@ const albumLookupFixture = `{
 {"wrapperType":"collection", "collectionType":"Album", "artistId":1634959678, "collectionId":6780871189, "artistName":"HET POMPSTATION, Opgekonkerd & Unicorn On K", "collectionName":"Une Bagga De Keta - Single", "collectionViewUrl":"https://music.apple.com/de/album/une-bagga-de-keta-single/6780871189?uo=4", "trackCount":1, "releaseDate":"2026-06-19T07:00:00Z", "country":"DEU"}]
 }`
 
+const compilationLookupFixture = `{"resultCount":1,"results":[
+{"wrapperType":"collection", "collectionType":"Compilation", "collectionId":1440765580, "artistName":"Various Artists", "collectionName":"Awesome Mix, Vol. 1", "collectionViewUrl":"https://music.apple.com/de/album/awesome-mix-vol-1/1440765580?uo=4", "trackCount":12, "releaseDate":"2014-07-29T07:00:00Z"}]}`
+
 func TestLookupAlbum(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -254,6 +284,8 @@ func TestLookupAlbum(t *testing.T) {
 		switch q.Get("id") {
 		case "6780871189":
 			w.Write([]byte(albumLookupFixture))
+		case "1440765580":
+			w.Write([]byte(compilationLookupFixture))
 		case "6781024437":
 			// A track ID returns the track, which isn't an album.
 			w.Write([]byte(lookupFixture))
@@ -279,6 +311,15 @@ func TestLookupAlbum(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("LookupAlbum = %+v, want %+v", got, want)
+	}
+
+	// Other collection types, like compilations, are albums too.
+	got, err = c.LookupAlbum(context.Background(), "de/1440765580")
+	if err != nil {
+		t.Fatalf("LookupAlbum of compilation: %v", err)
+	}
+	if got.Title != "Awesome Mix, Vol. 1" {
+		t.Errorf("LookupAlbum of compilation = %+v", got)
 	}
 
 	for _, id := range []string{"de/1", "de/6781024437"} {

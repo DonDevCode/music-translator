@@ -10,8 +10,9 @@ import (
 // result is the outcome of searching for a track or album on one platform.
 type result struct {
 	platform platform.Platform
-	track    *platform.Track // nil if not found or failed; for albums only Year and URL are set
-	err      error           // set if the search failed for another reason than not found
+	url      string // "" if not found or failed
+	year     int    // 0 if unknown
+	err      error  // set if the search failed for another reason than not found
 }
 
 // markdownEscaper escapes characters that Discord would treat as formatting.
@@ -67,8 +68,8 @@ func writeResults(b *strings.Builder, results []result) {
 		b.WriteString("\n")
 		rateLimitErr, rateLimited := platform.AsRateLimitError(r.err)
 		switch {
-		case r.track != nil:
-			fmt.Fprintf(b, "%s: %s", r.platform.Name(), r.track.URL)
+		case r.url != "":
+			fmt.Fprintf(b, "%s: %s", r.platform.Name(), r.url)
 		case rateLimited:
 			b.WriteString(rateLimitErr.Error())
 		case r.err != nil:
@@ -86,8 +87,8 @@ func releaseYear(sourceYear int, results []result) int {
 		return sourceYear
 	}
 	for _, r := range results {
-		if r.track != nil && r.track.Year != 0 {
-			return r.track.Year
+		if r.url != "" && r.year != 0 {
+			return r.year
 		}
 	}
 	return 0

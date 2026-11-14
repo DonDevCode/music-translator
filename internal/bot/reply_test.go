@@ -37,7 +37,7 @@ func TestFormatReply(t *testing.T) {
 			name:   "found",
 			source: &platform.Track{Title: "Under Pressure", Artists: []string{"Queen", "David Bowie"}, Year: 1981},
 			results: []result{
-				{apple, &platform.Track{URL: "https://music.apple.com/x", Year: 1982}, nil},
+				{apple, "https://music.apple.com/x", 1982, nil},
 			},
 			want: "**Under Pressure** – Queen, David Bowie · 1981\nApple Music: https://music.apple.com/x",
 		},
@@ -45,36 +45,36 @@ func TestFormatReply(t *testing.T) {
 			name:   "year from other platform",
 			source: &platform.Track{Title: "Song", Artists: []string{"Artist"}},
 			results: []result{
-				{spotify, nil, nil},
-				{apple, &platform.Track{URL: "https://music.apple.com/x", Year: 2001}, nil},
+				{spotify, "", 0, nil},
+				{apple, "https://music.apple.com/x", 2001, nil},
 			},
 			want: "**Song** – Artist · 2001\nNot found on Spotify\nApple Music: https://music.apple.com/x",
 		},
 		{
 			name:    "markdown in title",
 			source:  &platform.Track{Title: "*NSYNC_Song", Artists: []string{"A|B"}, Year: 2000},
-			results: []result{{apple, nil, nil}},
+			results: []result{{apple, "", 0, nil}},
 			want:    `**\*NSYNC\_Song** – A\|B · 2000` + "\nNot found on Apple Music",
 		},
 		{
 			name:    "masked link in artist",
 			source:  &platform.Track{Title: "Song", Artists: []string{"[Click here](https://evil.example)"}, Year: 2000},
-			results: []result{{apple, nil, nil}},
+			results: []result{{apple, "", 0, nil}},
 			want:    `**Song** – \[Click here\](https://evil.example) · 2000` + "\nNot found on Apple Music",
 		},
 		{
 			name:   "rate limited",
 			source: &platform.Track{Title: "Song", Artists: []string{"Artist"}, Year: 2000},
 			results: []result{
-				{youtube, nil, fmt.Errorf("searching: %w", &platform.RateLimitError{API: "YouTube"})},
-				{spotify, nil, errors.New("connection refused")},
+				{youtube, "", 0, fmt.Errorf("searching: %w", &platform.RateLimitError{API: "YouTube"})},
+				{spotify, "", 0, errors.New("connection refused")},
 			},
 			want: "**Song** – Artist · 2000\nYouTube API Rate Limit reached\nCouldn't search Spotify",
 		},
 		{
 			name:    "unknown year",
 			source:  &platform.Track{Title: "Song", Artists: []string{"Artist"}},
-			results: []result{{apple, nil, nil}},
+			results: []result{{apple, "", 0, nil}},
 			want:    "**Song** – Artist\nNot found on Apple Music",
 		},
 	}
@@ -116,19 +116,19 @@ func TestFormatAlbumReply(t *testing.T) {
 		{
 			name:    "album",
 			source:  &platform.Album{Title: "A Night At The Opera", Artists: []string{"Queen"}, Year: 1975, TrackCount: 12},
-			results: []result{{apple, &platform.Track{URL: "https://music.apple.com/x"}, nil}},
+			results: []result{{apple, "https://music.apple.com/x", 0, nil}},
 			want:    "**A Night At The Opera** – Queen · 1975 · 12 tracks\nApple Music: https://music.apple.com/x",
 		},
 		{
 			name:    "single with year from other platform",
 			source:  &platform.Album{Title: "Song", Artists: []string{"Artist"}, TrackCount: 1},
-			results: []result{{apple, &platform.Track{URL: "https://music.apple.com/x", Year: 2001}, nil}},
+			results: []result{{apple, "https://music.apple.com/x", 2001, nil}},
 			want:    "**Song** – Artist · 2001 · 1 track\nApple Music: https://music.apple.com/x",
 		},
 		{
 			name:    "unknown track count",
 			source:  &platform.Album{Title: "Album", Artists: []string{"Artist"}, Year: 2000},
-			results: []result{{apple, nil, nil}},
+			results: []result{{apple, "", 0, nil}},
 			want:    "**Album** – Artist · 2000\nNot found on Apple Music",
 		},
 	}

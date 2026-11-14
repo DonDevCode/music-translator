@@ -68,20 +68,15 @@ func (c *Client) Name() string { return "Apple Music" }
 // and returns an ID of the form "{storefront}/{trackID}", because tracks are
 // only guaranteed to exist in the storefront they were linked from.
 func (c *Client) ParseURL(u *url.URL) (string, bool) {
-	if u.Host != "music.apple.com" && u.Host != "geo.music.apple.com" {
+	storefront, kind, lastPart, ok := parseLink(u)
+	if !ok {
 		return "", false
 	}
-
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) < 3 || !storefrontPattern.MatchString(parts[0]) {
-		return "", false
-	}
-	storefront := parts[0]
 
 	var trackID string
-	switch parts[1] {
+	switch kind {
 	case "song":
-		trackID = parts[len(parts)-1]
+		trackID = lastPart
 	case "album":
 		trackID = u.Query().Get("i")
 	default:
@@ -101,23 +96,30 @@ func (c *Client) ParseURL(u *url.URL) (string, bool) {
 // without a track selector "i" and returns an ID of the form
 // "{storefront}/{albumID}", like ParseURL.
 func (c *Client) ParseAlbumURL(u *url.URL) (string, bool) {
-	if u.Host != "music.apple.com" && u.Host != "geo.music.apple.com" {
+	storefront, kind, albumID, ok := parseLink(u)
+	if !ok || kind != "album" || u.Query().Has("i") {
 		return "", false
 	}
 
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) < 3 || !storefrontPattern.MatchString(parts[0]) || parts[1] != "album" {
-		return "", false
-	}
-	if u.Query().Has("i") {
-		return "", false
-	}
-
-	albumID := parts[len(parts)-1]
 	if !numericPattern.MatchString(albumID) {
 		return "", false
 	}
-	return parts[0] + "/" + albumID, true
+	return storefront + "/" + albumID, true
+}
+
+// parseLink splits a link of the form
+// music.apple.com/{storefront}/{kind}/.../{lastPart}, which ParseURL and
+// ParseAlbumURL share.
+func parseLink(u *url.URL) (storefront, kind, lastPart string, ok bool) {
+	if u.Host != "music.apple.com" && u.Host != "geo.music.apple.com" {
+		return "", "", "", false
+	}
+
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 3 || !storefrontPattern.MatchString(parts[0]) {
+		return "", "", "", false
+	}
+	return parts[0], parts[1], parts[len(parts)-1], true
 }
 
 // searchStorefront is used for searches, where there is no link to take the
@@ -183,7 +185,7 @@ var (
 	}
 	albums = entity{
 		name:   "album",
-		is:     func(r result) bool { return r.WrapperType == "collection" && r.CollectionType == "Album" },
+		is:     func(r result) bool { return r.WrapperType == "collection" },
 		id:     func(r result) int64 { return r.CollectionID },
 		webIDs: albumIDs,
 	}
@@ -275,10 +277,11 @@ func search[T any](ctx context.Context, c *Client, term string, e entity, match 
 
 	// The iTunes API already found no match, so the website is only a
 	// best-effort second try and its failures count as not found. Rate
-	// limits still apply to the iTunes API as a whole and are reported.
+	// limits still apply to the iTunes API as a whole and are reported, and
+	// running out of time doesn't mean that nothing exists.
 	results, err = c.searchFallback(ctx, term, e)
 	if err != nil {
-		if _, ok := platform.AsRateLimitError(err); ok {
+		if _, ok := platform.AsRateLimitError(err); ok || ctx.Err() != nil {
 			return nil, err
 		}
 		log.Printf("Apple Music website search for %q: %v", term, err)
@@ -400,7 +403,7 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, e entity) (
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		if platform.IsITunesRateLimited(resp) {
+		if isRateLimited(resp) {
 			return nil, &platform.RateLimitError{API: "iTunes"}
 		}
 		return nil, fmt.Errorf("itunes %s: unexpected status %s", path, resp.Status)
@@ -433,4 +436,11 @@ func cleanTrackURL(raw string) string {
 	}
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// isRateLimited reports whether an iTunes Search or Lookup API error
+// response means the client is being throttled (roughly 20 requests per
+// minute). The API answers 403 without an explanation when it throttles.
+func isRateLimited(resp *http.Response) bool {
+	return resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden
 }

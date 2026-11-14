@@ -7,10 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/DonDevCode/music-translator/internal/platform"
 )
@@ -87,6 +90,7 @@ func (c *Client) ParseAlbumURL(u *url.URL) (string, bool) {
 
 type videosResponse struct {
 	Items []struct {
+		ID      string  `json:"id"`
 		Snippet snippet `json:"snippet"`
 	} `json:"items"`
 }
@@ -128,22 +132,43 @@ type snippet struct {
 
 // Lookup implements platform.Platform.
 func (c *Client) Lookup(ctx context.Context, id string) (*platform.Track, error) {
-	var body videosResponse
-	if err := c.get(ctx, "/videos", url.Values{"part": {"snippet"}, "id": {id}}, &body); err != nil {
+	tracks, err := c.videos(ctx, []string{id})
+	if err != nil {
 		return nil, err
 	}
-	if len(body.Items) == 0 {
+	if len(tracks) == 0 {
 		return nil, platform.ErrNotFound
 	}
+	return tracks[0], nil
+}
 
-	track := parseSnippet(body.Items[0].Snippet)
-	track.URL = trackURL(id)
-	return track, nil
+// videos looks up the videos with the given IDs (at most 50) in one request
+// and returns them in the same order. Missing videos, e.g. deleted or private
+// ones, are left out.
+func (c *Client) videos(ctx context.Context, ids []string) ([]*platform.Track, error) {
+	var body videosResponse
+	if err := c.get(ctx, "/videos", url.Values{"part": {"snippet"}, "id": {strings.Join(ids, ",")}}, &body); err != nil {
+		return nil, err
+	}
+
+	byID := make(map[string]snippet, len(body.Items))
+	for _, item := range body.Items {
+		byID[item.ID] = item.Snippet
+	}
+	var tracks []*platform.Track
+	for _, id := range ids {
+		if s, ok := byID[id]; ok {
+			track := parseSnippet(s)
+			track.URL = trackURL(id)
+			tracks = append(tracks, track)
+		}
+	}
+	return tracks, nil
 }
 
 // LookupAlbum implements platform.AlbumPlatform. Album playlists belong to
 // YouTube itself and say nothing about the artist, so the artists and year
-// are taken from the first track. It costs 3 quota units.
+// are taken from the tracks (up to the first 50). It costs 3 quota units.
 func (c *Client) LookupAlbum(ctx context.Context, id string) (*platform.Album, error) {
 	if browseIDPattern.MatchString(id) {
 		var err error
@@ -152,41 +177,105 @@ func (c *Client) LookupAlbum(ctx context.Context, id string) (*platform.Album, e
 		}
 	}
 
+	// Both requests only need the playlist ID, so they run concurrently.
 	var playlists playlistsResponse
-	err := c.get(ctx, "/playlists", url.Values{"part": {"snippet,contentDetails"}, "id": {id}}, &playlists)
-	if err != nil {
-		return nil, err
+	var items playlistItemsResponse
+	var playlistsErr, itemsErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		playlistsErr = c.get(ctx, "/playlists", url.Values{"part": {"snippet,contentDetails"}, "id": {id}}, &playlists)
+	}()
+	go func() {
+		defer wg.Done()
+		itemsErr = c.get(ctx, "/playlistItems", url.Values{"part": {"snippet"}, "playlistId": {id}, "maxResults": {"50"}}, &items)
+	}()
+	wg.Wait()
+	if playlistsErr != nil {
+		return nil, playlistsErr
 	}
-	if len(playlists.Items) == 0 {
+	if itemsErr != nil {
+		return nil, itemsErr
+	}
+	if len(playlists.Items) == 0 || len(items.Items) == 0 {
 		return nil, platform.ErrNotFound
 	}
 
-	var items playlistItemsResponse
-	err = c.get(ctx, "/playlistItems", url.Values{"part": {"snippet"}, "playlistId": {id}, "maxResults": {"1"}}, &items)
+	ids := make([]string, len(items.Items))
+	for i, item := range items.Items {
+		ids[i] = item.Snippet.ResourceID.VideoID
+	}
+	tracks, err := c.videos(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	if len(items.Items) == 0 {
+	if len(tracks) == 0 {
 		return nil, platform.ErrNotFound
-	}
-	first, err := c.Lookup(ctx, items.Items[0].Snippet.ResourceID.VideoID)
-	if err != nil {
-		return nil, err
 	}
 
 	playlist := playlists.Items[0]
-	return &platform.Album{
+	album := &platform.Album{
 		Title:      releaseTypePattern.ReplaceAllString(playlist.Snippet.Title, ""),
-		Artists:    first.Artists,
-		Year:       first.Year,
+		Artists:    albumArtists(tracks),
 		TrackCount: playlist.ContentDetails.ItemCount,
 		URL:        albumURL(id),
-	}, nil
+	}
+	for _, t := range tracks {
+		if t.Year != 0 {
+			album.Year = t.Year
+			break
+		}
+	}
+	return album, nil
+}
+
+// albumArtists returns the artists credited on at least half of the tracks,
+// in the order they first appear, so that guests on single tracks are left
+// out but all artists of a collaboration album are kept. If no artist is on
+// half of the tracks, as on compilations, the most frequent one is returned.
+func albumArtists(tracks []*platform.Track) []string {
+	var order []string
+	counts := map[string]int{}
+	for _, t := range tracks {
+		for i, a := range t.Artists {
+			if slices.Contains(t.Artists[:i], a) {
+				continue
+			}
+			if counts[a] == 0 {
+				order = append(order, a)
+			}
+			counts[a]++
+		}
+	}
+
+	var artists []string
+	for _, a := range order {
+		if 2*counts[a] >= len(tracks) {
+			artists = append(artists, a)
+		}
+	}
+	if len(artists) > 0 {
+		return artists
+	}
+
+	var top string
+	for _, a := range order {
+		if counts[a] > counts[top] {
+			top = a
+		}
+	}
+	if top == "" {
+		return nil
+	}
+	return []string{top}
 }
 
 // SearchAlbum implements platform.AlbumSearcher. The search results lack
 // track counts, which are then fetched for all of them at a cost of 1 quota
-// unit.
+// unit. The counts only help to tell releases apart, so if they can't be
+// fetched (e.g. because the quota is used up) the albums are matched without
+// them.
 func (c *Client) SearchAlbum(ctx context.Context, a *platform.Album) (*platform.Album, error) {
 	q := a.Title
 	if len(a.Artists) > 0 {
@@ -205,7 +294,7 @@ func (c *Client) SearchAlbum(ctx context.Context, a *platform.Album) (*platform.
 	}
 
 	if err := c.addTrackCounts(ctx, found); err != nil {
-		return nil, err
+		log.Printf("Fetching YouTube track counts for %q: %v", q, err)
 	}
 	candidates := make([]*platform.Album, len(found))
 	for i, f := range found {
@@ -306,7 +395,7 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		if platform.IsYouTubeRateLimited(resp) {
+		if isRateLimited(resp) {
 			return &platform.RateLimitError{API: "YouTube"}
 		}
 		return fmt.Errorf("youtube %s: unexpected status %s", path, resp.Status)
@@ -316,6 +405,44 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 		return fmt.Errorf("decoding youtube %s: %w", path, err)
 	}
 	return nil
+}
+
+// Error reasons the YouTube Data API uses when the daily quota or a rate
+// limit is used up.
+var rateLimitReasons = map[string]bool{
+	"quotaExceeded":         true,
+	"rateLimitExceeded":     true,
+	"userRateLimitExceeded": true,
+	"dailyLimitExceeded":    true,
+}
+
+// isRateLimited reports whether a YouTube Data API error response is
+// about quota or rate limits. Other errors share the same status code (e.g.
+// 403 for a disabled API), so the reason in the body is checked.
+func isRateLimited(resp *http.Response) bool {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return true
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		return false
+	}
+
+	var body struct {
+		Error struct {
+			Errors []struct {
+				Reason string `json:"reason"`
+			} `json:"errors"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return false
+	}
+	for _, e := range body.Error.Errors {
+		if rateLimitReasons[e.Reason] {
+			return true
+		}
+	}
+	return false
 }
 
 func trackURL(videoID string) string {
