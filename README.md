@@ -28,8 +28,10 @@ internal/platform/  music platform abstraction and link detection
 
 | Platform | Recognized links |
 |---|---|
-| Apple Music | `music.apple.com/{country}/song/…/{id}`, `music.apple.com/{country}/album/…?i={trackId}` |
+| Apple Music | `music.apple.com/{country}/song/…/{id}`, `music.apple.com/{country}/album/…?i={trackId}`, albums: `music.apple.com/{country}/album/…/{albumId}` |
 | YouTube Music | `music.youtube.com/watch?v={id}` |
+
+Album links are only answered when another platform supports albums too. YouTube Music doesn't yet, so for now Apple Music album links are recognized but ignored.
 
 ## Notes
 

@@ -18,17 +18,59 @@ func BestMatch(want *Track, candidates []*Track) *Track {
 	bestScore := 0
 
 	for _, c := range candidates {
-		ts := titleScore(want.Title, c.Title)
-		as := artistScore(want.Artists, c.Artists)
-		if ts == 0 || as == 0 {
-			continue
-		}
-		if score := ts + as; score > bestScore {
+		if score := matchScore(want.Title, c.Title, want.Artists, c.Artists); score > bestScore {
 			best, bestScore = c, score
 		}
 	}
 
 	return best
+}
+
+// BestAlbumMatch is BestMatch for albums. Track counts tell apart releases
+// with the same title, such as a single and the album it is from, or an
+// album and its deluxe edition. Bonus tracks make counts differ slightly
+// between platforms, so only an exact count is preferred and only a large
+// difference rules a candidate out.
+func BestAlbumMatch(want *Album, candidates []*Album) *Album {
+	var best *Album
+	bestScore := 0
+
+	for _, c := range candidates {
+		// Doubled so that the same track count only breaks ties between
+		// equally good title and artist matches.
+		score := 2 * matchScore(want.Title, c.Title, want.Artists, c.Artists)
+		if score == 0 || !similarTrackCounts(want.TrackCount, c.TrackCount) {
+			continue
+		}
+		if want.TrackCount != 0 && want.TrackCount == c.TrackCount {
+			score++
+		}
+		if score > bestScore {
+			best, bestScore = c, score
+		}
+	}
+
+	return best
+}
+
+// matchScore rates how likely two releases are the same, or returns 0 if
+// they aren't. Both title and an artist must match.
+func matchScore(titleA, titleB string, artistsA, artistsB []string) int {
+	ts := titleScore(titleA, titleB)
+	as := artistScore(artistsA, artistsB)
+	if ts == 0 || as == 0 {
+		return 0
+	}
+	return ts + as
+}
+
+// similarTrackCounts reports whether a and b could be counts of the same
+// release, e.g. 17 and 19 but not 17 and 40. Unknown counts (0) match all.
+func similarTrackCounts(a, b int) bool {
+	if a == 0 || b == 0 {
+		return true
+	}
+	return max(a, b) <= 2*min(a, b)+1
 }
 
 // titleScore compares titles, ignoring case and punctuation. Bracketed parts

@@ -1,6 +1,9 @@
 package platform
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestBestMatch(t *testing.T) {
 	track := func(title string, artists ...string) *Track {
@@ -106,6 +109,79 @@ func TestBestMatch(t *testing.T) {
 			}
 			if gotURL != tt.wantURL {
 				t.Errorf("BestMatch = %q, want %q", gotURL, tt.wantURL)
+			}
+		})
+	}
+}
+
+func TestBestAlbumMatch(t *testing.T) {
+	album := func(title, artist string, tracks int) *Album {
+		return &Album{Title: title, Artists: []string{artist}, TrackCount: tracks, URL: fmt.Sprint(title, "|", tracks)}
+	}
+
+	tests := []struct {
+		name       string
+		want       *Album
+		candidates []*Album
+		wantURL    string // "" for no match
+	}{
+		{
+			name:       "exact",
+			want:       album("Abbey Road", "The Beatles", 17),
+			candidates: []*Album{album("Help!", "The Beatles", 14), album("Abbey Road", "The Beatles", 17)},
+			wantURL:    "Abbey Road|17",
+		},
+		{
+			name:       "prefers same track count",
+			want:       album("Abbey Road", "The Beatles", 17),
+			candidates: []*Album{album("Abbey Road", "The Beatles", 19), album("Abbey Road", "The Beatles", 17)},
+			wantURL:    "Abbey Road|17",
+		},
+		{
+			name:       "allows bonus tracks",
+			want:       album("Abbey Road", "The Beatles", 17),
+			candidates: []*Album{album("Abbey Road", "The Beatles", 19)},
+			wantURL:    "Abbey Road|19",
+		},
+		{
+			name:       "rejects deluxe edition with many more tracks",
+			want:       album("Abbey Road", "The Beatles", 17),
+			candidates: []*Album{album("Abbey Road", "The Beatles", 40)},
+		},
+		{
+			name:       "single is not the album",
+			want:       album("Let It Be", "The Beatles", 1),
+			candidates: []*Album{album("Let It Be", "The Beatles", 12), album("Let It Be", "The Beatles", 2)},
+			wantURL:    "Let It Be|2",
+		},
+		{
+			name:       "title match beats track count",
+			want:       album("Abbey Road (Remastered)", "The Beatles", 17),
+			candidates: []*Album{album("Abbey Road", "The Beatles", 17), album("Abbey Road (Remastered)", "The Beatles", 19)},
+			wantURL:    "Abbey Road (Remastered)|19",
+		},
+		{
+			name:       "unknown track count",
+			want:       album("Abbey Road", "The Beatles", 0),
+			candidates: []*Album{album("Abbey Road", "The Beatles", 40)},
+			wantURL:    "Abbey Road|40",
+		},
+		{
+			name:       "other artist",
+			want:       album("Abbey Road", "The Beatles", 17),
+			candidates: []*Album{album("Abbey Road", "George Benson", 17)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BestAlbumMatch(tt.want, tt.candidates)
+			gotURL := ""
+			if got != nil {
+				gotURL = got.URL
+			}
+			if gotURL != tt.wantURL {
+				t.Errorf("BestAlbumMatch = %q, want %q", gotURL, tt.wantURL)
 			}
 		})
 	}

@@ -2,6 +2,7 @@ package bot
 
 import (
 	"log"
+	"slices"
 	"sync"
 	"time"
 
@@ -31,7 +32,9 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 
 	// Links are independent, so they are resolved concurrently, but the
 	// replies are sent in the order the links appear.
-	links := platform.FindLinks(m.Content, b.platforms, maxLinksPerMessage)
+	// Album links are skipped while no other platform supports albums.
+	links := slices.DeleteFunc(platform.FindLinks(m.Content, b.platforms, maxLinksPerMessage),
+		func(link platform.Link) bool { return len(b.targets(link)) == 0 })
 	replies := make([]string, len(links))
 	errs := make([]error, len(links))
 	var wg sync.WaitGroup
@@ -48,7 +51,7 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 	for i, link := range links {
 		reply, err := replies[i], errs[i]
 		if err != nil {
-			log.Printf("Looking up %s track %s: %v", link.Platform.Name(), link.ID, err)
+			log.Printf("Looking up %s %s %s: %v", link.Platform.Name(), kindName(link.Kind), link.ID, err)
 
 			// Tell users why the bot didn't answer, once per API and message.
 			// Other errors stay silent, since a reply without links isn't
@@ -71,4 +74,11 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 			log.Printf("Replying to message %s: %v", m.ID, err)
 		}
 	}
+}
+
+func kindName(k platform.Kind) string {
+	if k == platform.KindAlbum {
+		return "album"
+	}
+	return "track"
 }
