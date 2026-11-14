@@ -1,31 +1,49 @@
-// Package youtubemusic looks up YouTube Music tracks via the YouTube Data API.
+// Package youtubemusic looks up YouTube Music tracks and albums via the
+// YouTube Data API, and searches for albums via the YouTube Music website's
+// internal API.
 package youtubemusic
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
+	"strings"
+	"sync"
 
 	"github.com/DonDevCode/music-translator/internal/platform"
 )
 
 const defaultBaseURL = "https://www.googleapis.com/youtube/v3"
 
-var videoIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
+var (
+	videoIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
+	// YouTube Music albums are playlists with IDs of this form. Other
+	// playlists, such as those made by users, have other prefixes.
+	albumIDPattern = regexp.MustCompile(`^OLAK5uy_[A-Za-z0-9_-]+$`)
+	// Album pages have browse IDs of this form.
+	browseIDPattern = regexp.MustCompile(`^MPREb_[A-Za-z0-9_-]+$`)
+	// Release type prefixes that some album playlist titles have.
+	releaseTypePattern = regexp.MustCompile(`^(Album|EP|Single) - `)
+)
 
 // Client is the YouTube Music platform.
+//
+// It implements platform.AlbumSearcher.
 type Client struct {
-	http    *http.Client
-	apiKey  string
-	baseURL string
+	http         *http.Client
+	apiKey       string
+	baseURL      string
+	innerTubeURL string
 }
 
 // New creates a YouTube Music client using a YouTube Data API v3 key.
 func New(httpClient *http.Client, apiKey string) *Client {
-	return &Client{http: httpClient, apiKey: apiKey, baseURL: defaultBaseURL}
+	return &Client{http: httpClient, apiKey: apiKey, baseURL: defaultBaseURL, innerTubeURL: defaultInnerTubeURL}
 }
 
 // Name implements platform.Platform.
@@ -44,8 +62,35 @@ func (c *Client) ParseURL(u *url.URL) (string, bool) {
 	return id, true
 }
 
+// ParseAlbumURL implements platform.AlbumPlatform. It recognizes
+//
+//	music.youtube.com/playlist?list={albumID}
+//	music.youtube.com/browse/{browseID}
+//
+// and returns the playlist ID or browse ID. YouTube Music shares albums as
+// playlist links, but the album pages in the browser have browse links.
+func (c *Client) ParseAlbumURL(u *url.URL) (string, bool) {
+	if u.Host != "music.youtube.com" {
+		return "", false
+	}
+	var id string
+	var ok bool
+	if u.Path == "/playlist" {
+		id = u.Query().Get("list")
+		ok = albumIDPattern.MatchString(id)
+	} else if browseID, found := strings.CutPrefix(u.Path, "/browse/"); found {
+		id = browseID
+		ok = browseIDPattern.MatchString(id)
+	}
+	if !ok {
+		return "", false
+	}
+	return id, true
+}
+
 type videosResponse struct {
 	Items []struct {
+		ID      string  `json:"id"`
 		Snippet snippet `json:"snippet"`
 	} `json:"items"`
 }
@@ -59,6 +104,26 @@ type searchResponse struct {
 	} `json:"items"`
 }
 
+type playlistsResponse struct {
+	Items []struct {
+		ID             string  `json:"id"`
+		Snippet        snippet `json:"snippet"`
+		ContentDetails struct {
+			ItemCount int `json:"itemCount"`
+		} `json:"contentDetails"`
+	} `json:"items"`
+}
+
+type playlistItemsResponse struct {
+	Items []struct {
+		Snippet struct {
+			ResourceID struct {
+				VideoID string `json:"videoId"`
+			} `json:"resourceId"`
+		} `json:"snippet"`
+	} `json:"items"`
+}
+
 type snippet struct {
 	Title        string `json:"title"`
 	ChannelTitle string `json:"channelTitle"`
@@ -67,17 +132,209 @@ type snippet struct {
 
 // Lookup implements platform.Platform.
 func (c *Client) Lookup(ctx context.Context, id string) (*platform.Track, error) {
-	var body videosResponse
-	if err := c.get(ctx, "/videos", url.Values{"part": {"snippet"}, "id": {id}}, &body); err != nil {
+	tracks, err := c.videos(ctx, []string{id})
+	if err != nil {
 		return nil, err
 	}
-	if len(body.Items) == 0 {
+	if len(tracks) == 0 {
+		return nil, platform.ErrNotFound
+	}
+	return tracks[0], nil
+}
+
+// videos looks up the videos with the given IDs (at most 50) in one request
+// and returns them in the same order. Missing videos, e.g. deleted or private
+// ones, are left out.
+func (c *Client) videos(ctx context.Context, ids []string) ([]*platform.Track, error) {
+	var body videosResponse
+	if err := c.get(ctx, "/videos", url.Values{"part": {"snippet"}, "id": {strings.Join(ids, ",")}}, &body); err != nil {
+		return nil, err
+	}
+
+	byID := make(map[string]snippet, len(body.Items))
+	for _, item := range body.Items {
+		byID[item.ID] = item.Snippet
+	}
+	var tracks []*platform.Track
+	for _, id := range ids {
+		if s, ok := byID[id]; ok {
+			track := parseSnippet(s)
+			track.URL = trackURL(id)
+			tracks = append(tracks, track)
+		}
+	}
+	return tracks, nil
+}
+
+// LookupAlbum implements platform.AlbumPlatform. Album playlists belong to
+// YouTube itself and say nothing about the artist, so the artists and year
+// are taken from the tracks (up to the first 50). It costs 3 quota units.
+func (c *Client) LookupAlbum(ctx context.Context, id string) (*platform.Album, error) {
+	if browseIDPattern.MatchString(id) {
+		var err error
+		if id, err = c.resolveBrowseID(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+
+	// Both requests only need the playlist ID, so they run concurrently.
+	var playlists playlistsResponse
+	var items playlistItemsResponse
+	var playlistsErr, itemsErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		playlistsErr = c.get(ctx, "/playlists", url.Values{"part": {"snippet,contentDetails"}, "id": {id}}, &playlists)
+	}()
+	go func() {
+		defer wg.Done()
+		itemsErr = c.get(ctx, "/playlistItems", url.Values{"part": {"snippet"}, "playlistId": {id}, "maxResults": {"50"}}, &items)
+	}()
+	wg.Wait()
+	if playlistsErr != nil {
+		return nil, playlistsErr
+	}
+	if itemsErr != nil {
+		return nil, itemsErr
+	}
+	if len(playlists.Items) == 0 || len(items.Items) == 0 {
 		return nil, platform.ErrNotFound
 	}
 
-	track := parseSnippet(body.Items[0].Snippet)
-	track.URL = trackURL(id)
-	return track, nil
+	ids := make([]string, len(items.Items))
+	for i, item := range items.Items {
+		ids[i] = item.Snippet.ResourceID.VideoID
+	}
+	tracks, err := c.videos(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	if len(tracks) == 0 {
+		return nil, platform.ErrNotFound
+	}
+
+	playlist := playlists.Items[0]
+	album := &platform.Album{
+		Title:      releaseTypePattern.ReplaceAllString(playlist.Snippet.Title, ""),
+		Artists:    albumArtists(tracks),
+		TrackCount: playlist.ContentDetails.ItemCount,
+		URL:        albumURL(id),
+	}
+	for _, t := range tracks {
+		if t.Year != 0 {
+			album.Year = t.Year
+			break
+		}
+	}
+	return album, nil
+}
+
+// albumArtists returns the artists credited on at least half of the tracks,
+// in the order they first appear, so that guests on single tracks are left
+// out but all artists of a collaboration album are kept. If no artist is on
+// half of the tracks, as on compilations, the most frequent one is returned.
+func albumArtists(tracks []*platform.Track) []string {
+	var order []string
+	counts := map[string]int{}
+	for _, t := range tracks {
+		for i, a := range t.Artists {
+			if slices.Contains(t.Artists[:i], a) {
+				continue
+			}
+			if counts[a] == 0 {
+				order = append(order, a)
+			}
+			counts[a]++
+		}
+	}
+
+	var artists []string
+	for _, a := range order {
+		if 2*counts[a] >= len(tracks) {
+			artists = append(artists, a)
+		}
+	}
+	if len(artists) > 0 {
+		return artists
+	}
+
+	var top string
+	for _, a := range order {
+		if counts[a] > counts[top] {
+			top = a
+		}
+	}
+	if top == "" {
+		return nil
+	}
+	return []string{top}
+}
+
+// SearchAlbum implements platform.AlbumSearcher. The search results lack
+// track counts, which are then fetched for all of them at a cost of 1 quota
+// unit. The counts only help to tell releases apart, so if they can't be
+// fetched (e.g. because the quota is used up) the albums are matched without
+// them.
+func (c *Client) SearchAlbum(ctx context.Context, a *platform.Album) (*platform.Album, error) {
+	q := a.Title
+	if len(a.Artists) > 0 {
+		q = a.Artists[0] + " " + q
+	}
+
+	found, err := c.searchAlbums(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	if len(found) == 0 {
+		return nil, platform.ErrNotFound
+	}
+	if len(found) > maxAlbumResults {
+		found = found[:maxAlbumResults]
+	}
+
+	if err := c.addTrackCounts(ctx, found); err != nil {
+		log.Printf("Fetching YouTube track counts for %q: %v", q, err)
+	}
+	candidates := make([]*platform.Album, len(found))
+	for i, f := range found {
+		candidates[i] = f.album
+	}
+	if best := platform.BestAlbumMatch(a, candidates); best != nil {
+		return best, nil
+	}
+	return nil, platform.ErrNotFound
+}
+
+// maxAlbumResults limits how many album search results are considered. The
+// Data API accepts up to 50 playlist IDs per request.
+const maxAlbumResults = 20
+
+// addTrackCounts sets the track counts of the albums.
+func (c *Client) addTrackCounts(ctx context.Context, albums []foundAlbum) error {
+	ids := make([]string, len(albums))
+	for i, a := range albums {
+		ids[i] = a.id
+	}
+
+	var body playlistsResponse
+	err := c.get(ctx, "/playlists", url.Values{
+		"part":       {"contentDetails"},
+		"id":         {strings.Join(ids, ",")},
+		"maxResults": {"50"},
+	}, &body)
+	if err != nil {
+		return err
+	}
+
+	counts := make(map[string]int, len(body.Items))
+	for _, item := range body.Items {
+		counts[item.ID] = item.ContentDetails.ItemCount
+	}
+	for _, a := range albums {
+		a.album.TrackCount = counts[a.id]
+	}
+	return nil
 }
 
 // Search implements platform.Platform. A search costs 100 of the API's
@@ -138,7 +395,7 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		if platform.IsYouTubeRateLimited(resp) {
+		if isRateLimited(resp) {
 			return &platform.RateLimitError{API: "YouTube"}
 		}
 		return fmt.Errorf("youtube %s: unexpected status %s", path, resp.Status)
@@ -150,6 +407,48 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 	return nil
 }
 
+// Error reasons the YouTube Data API uses when the daily quota or a rate
+// limit is used up.
+var rateLimitReasons = map[string]bool{
+	"quotaExceeded":         true,
+	"rateLimitExceeded":     true,
+	"userRateLimitExceeded": true,
+	"dailyLimitExceeded":    true,
+}
+
+// isRateLimited reports whether a YouTube Data API error response is
+// about quota or rate limits. Other errors share the same status code (e.g.
+// 403 for a disabled API), so the reason in the body is checked.
+func isRateLimited(resp *http.Response) bool {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return true
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		return false
+	}
+
+	var body struct {
+		Error struct {
+			Errors []struct {
+				Reason string `json:"reason"`
+			} `json:"errors"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return false
+	}
+	for _, e := range body.Error.Errors {
+		if rateLimitReasons[e.Reason] {
+			return true
+		}
+	}
+	return false
+}
+
 func trackURL(videoID string) string {
 	return "https://music.youtube.com/watch?v=" + videoID
+}
+
+func albumURL(playlistID string) string {
+	return "https://music.youtube.com/playlist?list=" + playlistID
 }

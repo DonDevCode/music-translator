@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -23,10 +24,38 @@ func (f fakePlatform) Lookup(context.Context, string) (*Track, error) { return n
 
 func (f fakePlatform) Search(context.Context, *Track) (*Track, error) { return nil, ErrNotFound }
 
+// fakeAlbumPlatform also matches example.com/album/{id}, which ParseURL
+// rejects.
+type fakeAlbumPlatform struct{ fakePlatform }
+
+func (f fakeAlbumPlatform) ParseURL(u *url.URL) (string, bool) {
+	if strings.HasPrefix(u.Path, "/album/") {
+		return "", false
+	}
+	return f.fakePlatform.ParseURL(u)
+}
+
+func (f fakeAlbumPlatform) ParseAlbumURL(u *url.URL) (string, bool) {
+	id, ok := strings.CutPrefix(u.Path, "/album/")
+	return id, ok && u.Host == f.host && id != ""
+}
+
+func (f fakeAlbumPlatform) LookupAlbum(context.Context, string) (*Album, error) {
+	return nil, ErrNotFound
+}
+
+func (f fakeAlbumPlatform) SearchAlbum(context.Context, *Album) (*Album, error) {
+	return nil, ErrNotFound
+}
+
 func TestFindLinks(t *testing.T) {
 	a := fakePlatform{name: "A", host: "a.test"}
 	b := fakePlatform{name: "B", host: "b.test"}
-	platforms := []Platform{a, b}
+	c := fakeAlbumPlatform{fakePlatform{name: "C", host: "c.test"}}
+	platforms := []Platform{a, b, c}
+
+	track := func(p Platform, id string) Link { return Link{Platform: p, Kind: KindTrack, ID: id} }
+	album := func(p Platform, id string) Link { return Link{Platform: p, Kind: KindAlbum, ID: id} }
 
 	tests := []struct {
 		name    string
@@ -36,15 +65,19 @@ func TestFindLinks(t *testing.T) {
 	}{
 		{"no links", "hello there", 3, nil},
 		{"unknown host", "https://other.test/1", 3, nil},
-		{"plain", "check https://a.test/1 out", 3, []Link{{a, "1"}}},
-		{"suppressed embed", "<https://a.test/1>", 3, []Link{{a, "1"}}},
-		{"trailing punctuation", "listen to https://a.test/1!", 3, []Link{{a, "1"}}},
-		{"markdown link", "[song](https://a.test/1)", 3, []Link{{a, "1"}}},
-		{"spoiler", "||https://a.test/1||", 3, []Link{{a, "1"}}},
-		{"multiple platforms", "https://b.test/2 and https://a.test/1", 3, []Link{{b, "2"}, {a, "1"}}},
-		{"duplicates", "https://a.test/1 https://a.test/1", 3, []Link{{a, "1"}}},
-		{"same id on different platforms", "https://a.test/1 https://b.test/1", 3, []Link{{a, "1"}, {b, "1"}}},
-		{"limit", "https://a.test/1 https://a.test/2 https://a.test/3", 2, []Link{{a, "1"}, {a, "2"}}},
+		{"plain", "check https://a.test/1 out", 3, []Link{track(a, "1")}},
+		{"suppressed embed", "<https://a.test/1>", 3, []Link{track(a, "1")}},
+		{"trailing punctuation", "listen to https://a.test/1!", 3, []Link{track(a, "1")}},
+		{"markdown link", "[song](https://a.test/1)", 3, []Link{track(a, "1")}},
+		{"spoiler", "||https://a.test/1||", 3, []Link{track(a, "1")}},
+		{"multiple platforms", "https://b.test/2 and https://a.test/1", 3, []Link{track(b, "2"), track(a, "1")}},
+		{"duplicates", "https://a.test/1 https://a.test/1", 3, []Link{track(a, "1")}},
+		{"same id on different platforms", "https://a.test/1 https://b.test/1", 3, []Link{track(a, "1"), track(b, "1")}},
+		{"album", "https://c.test/album/1", 3, []Link{album(c, "1")}},
+		{"track on album platform", "https://c.test/1", 3, []Link{track(c, "1")}},
+		{"same id as track and album", "https://c.test/1 https://c.test/album/1", 3, []Link{track(c, "1"), album(c, "1")}},
+		{"album on platform without albums", "https://a.test/album/1", 3, []Link{track(a, "album/1")}},
+		{"limit", "https://a.test/1 https://a.test/2 https://a.test/3", 2, []Link{track(a, "1"), track(a, "2")}},
 	}
 
 	for _, tt := range tests {

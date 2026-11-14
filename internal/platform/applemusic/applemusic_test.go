@@ -182,6 +182,33 @@ func TestSearchWebsiteFailure(t *testing.T) {
 	}
 }
 
+func TestSearchWebsiteTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search":
+			w.Write([]byte(searchFixture))
+		case "/us/search":
+			// The time for the link runs out during the website search.
+			cancel()
+			http.Error(w, "slow", http.StatusServiceUnavailable)
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.Client())
+	c.baseURL = srv.URL
+	c.webBaseURL = srv.URL
+
+	_, err := c.Search(ctx, &platform.Track{Title: "ZickeZackeZecken", Artists: []string{"Swiss & Die Andern"}})
+	if err == nil || errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("Search: err = %v, want an error other than ErrNotFound", err)
+	}
+}
+
 func TestRateLimit(t *testing.T) {
 	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -194,11 +221,187 @@ func TestRateLimit(t *testing.T) {
 
 		_, lookupErr := c.Lookup(context.Background(), "us/6781024437")
 		_, searchErr := c.Search(context.Background(), &platform.Track{Title: "Song", Artists: []string{"Artist"}})
-		for name, err := range map[string]error{"Lookup": lookupErr, "Search": searchErr} {
+		_, lookupAlbumErr := c.LookupAlbum(context.Background(), "us/6781024026")
+		_, searchAlbumErr := c.SearchAlbum(context.Background(), &platform.Album{Title: "Album", Artists: []string{"Artist"}})
+		for name, err := range map[string]error{
+			"Lookup": lookupErr, "Search": searchErr, "LookupAlbum": lookupAlbumErr, "SearchAlbum": searchAlbumErr,
+		} {
 			if _, ok := platform.AsRateLimitError(err); !ok {
 				t.Errorf("%s with status %d: err = %v, want rate limited", name, status, err)
 			}
 		}
 		srv.Close()
+	}
+}
+
+func TestParseAlbumURL(t *testing.T) {
+	tests := []struct {
+		url    string
+		wantID string
+		wantOK bool
+	}{
+		{"https://music.apple.com/de/album/une-bagga-de-keta/6780871189", "de/6780871189", true},
+		{"https://music.apple.com/us/album/a-night-at-the-opera/6781024026?uo=4", "us/6781024026", true},
+		{"https://music.apple.com/us/album/6781024026", "us/6781024026", true},
+		{"https://geo.music.apple.com/us/album/a-night-at-the-opera/6781024026", "us/6781024026", true},
+		{"https://music.apple.com/de/album/une-bagga-de-keta/6780871189?i=6780871554", "", false},
+		{"https://music.apple.com/us/song/bohemian-rhapsody/6781024437", "", false},
+		{"https://music.apple.com/us/album/a-night-at-the-opera", "", false},
+		{"https://music.apple.com/us/artist/queen/3296287", "", false},
+		{"https://example.com/us/album/x/6781024026", "", false},
+	}
+
+	c := New(http.DefaultClient)
+	for _, tt := range tests {
+		u, err := url.Parse(tt.url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, ok := c.ParseAlbumURL(u)
+		if id != tt.wantID || ok != tt.wantOK {
+			t.Errorf("ParseAlbumURL(%q) = %q, %v; want %q, %v", tt.url, id, ok, tt.wantID, tt.wantOK)
+		}
+	}
+}
+
+// Trimmed real response for
+// https://itunes.apple.com/lookup?id=6780871189&country=de&entity=album.
+const albumLookupFixture = `{
+ "resultCount":1,
+ "results": [
+{"wrapperType":"collection", "collectionType":"Album", "artistId":1634959678, "collectionId":6780871189, "artistName":"HET POMPSTATION, Opgekonkerd & Unicorn On K", "collectionName":"Une Bagga De Keta - Single", "collectionViewUrl":"https://music.apple.com/de/album/une-bagga-de-keta-single/6780871189?uo=4", "trackCount":1, "releaseDate":"2026-06-19T07:00:00Z", "country":"DEU"}]
+}`
+
+const compilationLookupFixture = `{"resultCount":1,"results":[
+{"wrapperType":"collection", "collectionType":"Compilation", "collectionId":1440765580, "artistName":"Various Artists", "collectionName":"Awesome Mix, Vol. 1", "collectionViewUrl":"https://music.apple.com/de/album/awesome-mix-vol-1/1440765580?uo=4", "trackCount":12, "releaseDate":"2014-07-29T07:00:00Z"}]}`
+
+func TestLookupAlbum(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if r.URL.Path != "/lookup" || q.Get("country") != "de" || q.Get("entity") != "album" {
+			t.Errorf("unexpected request %s", r.URL)
+		}
+		switch q.Get("id") {
+		case "6780871189":
+			w.Write([]byte(albumLookupFixture))
+		case "1440765580":
+			w.Write([]byte(compilationLookupFixture))
+		case "6781024437":
+			// A track ID returns the track, which isn't an album.
+			w.Write([]byte(lookupFixture))
+		default:
+			w.Write([]byte(`{"resultCount":0,"results":[]}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.Client())
+	c.baseURL = srv.URL
+
+	got, err := c.LookupAlbum(context.Background(), "de/6780871189")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &platform.Album{
+		Title:      "Une Bagga De Keta",
+		Artists:    []string{"HET POMPSTATION, Opgekonkerd & Unicorn On K"},
+		Year:       2026,
+		TrackCount: 1,
+		URL:        "https://music.apple.com/de/album/une-bagga-de-keta-single/6780871189",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("LookupAlbum = %+v, want %+v", got, want)
+	}
+
+	// Other collection types, like compilations, are albums too.
+	got, err = c.LookupAlbum(context.Background(), "de/1440765580")
+	if err != nil {
+		t.Fatalf("LookupAlbum of compilation: %v", err)
+	}
+	if got.Title != "Awesome Mix, Vol. 1" {
+		t.Errorf("LookupAlbum of compilation = %+v", got)
+	}
+
+	for _, id := range []string{"de/1", "de/6781024437"} {
+		if _, err := c.LookupAlbum(context.Background(), id); !errors.Is(err, platform.ErrNotFound) {
+			t.Errorf("LookupAlbum(%q): err = %v, want ErrNotFound", id, err)
+		}
+	}
+}
+
+// Trimmed real response for /search?term=Abbey+Road+The+Beatles&entity=album.
+const albumSearchFixture = `{
+ "resultCount":3,
+ "results": [
+{"wrapperType":"collection", "collectionType":"Album", "collectionId":1441164426, "artistName":"The Beatles", "collectionName":"Abbey Road (Remastered)", "collectionViewUrl":"https://music.apple.com/us/album/abbey-road-remastered/1441164426?uo=4", "trackCount":19, "releaseDate":"1969-09-26T07:00:00Z"},
+{"wrapperType":"collection", "collectionType":"Album", "collectionId":1474815798, "artistName":"The Beatles", "collectionName":"Abbey Road (2019 Mix)", "collectionViewUrl":"https://music.apple.com/us/album/abbey-road-2019-mix/1474815798?uo=4", "trackCount":17, "releaseDate":"1969-09-26T07:00:00Z"},
+{"wrapperType":"collection", "collectionType":"Album", "collectionId":1474833332, "artistName":"The Beatles", "collectionName":"Abbey Road (Super Deluxe Edition) [2019 Remix & Remaster]", "collectionViewUrl":"https://music.apple.com/us/album/abbey-road-super-deluxe-edition-2019-remix-remaster/1474833332?uo=4", "trackCount":40, "releaseDate":"1969-09-26T07:00:00Z"}]
+}`
+
+// Excerpt of the website's search page for "Une Bagga De Keta", with links
+// to the album and to its track.
+const webAlbumSearchFixture = `<a href="https://music.apple.com/us/album/une-bagga-de-keta/6780871189?i=6780871554">Une Bagga De Keta</a>
+<a href="https://music.apple.com/us/album/une-bagga-de-keta-single/6780871189">Une Bagga De Keta - Single</a>
+<a href="https://music.apple.com/us/album/other-single/1000000001">Other - Single</a>
+<a href="https://music.apple.com/us/album/une-bagga-de-keta-single/6780871189">Une Bagga De Keta - Single</a>`
+
+// The lookup returns results in a different order than requested.
+const webAlbumLookupFixture = `{"resultCount":2,"results":[
+{"wrapperType":"collection", "collectionType":"Album", "collectionId":1000000001, "artistName":"HET POMPSTATION", "collectionName":"Other - Single", "collectionViewUrl":"https://music.apple.com/us/album/other-single/1000000001?uo=4", "trackCount":1, "releaseDate":"2025-01-01T07:00:00Z"},
+{"wrapperType":"collection", "collectionType":"Album", "collectionId":6780871189, "artistName":"HET POMPSTATION, Opgekonkerd & Unicorn On K", "collectionName":"Une Bagga De Keta - Single", "collectionViewUrl":"https://music.apple.com/us/album/une-bagga-de-keta-single/6780871189?uo=4", "trackCount":1, "releaseDate":"2026-06-19T07:00:00Z"}]}`
+
+func TestSearchAlbum(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("entity"); r.URL.Path != "/us/search" && got != "album" {
+			t.Errorf("entity = %q, want album", got)
+		}
+		switch r.URL.Path {
+		case "/search":
+			w.Write([]byte(albumSearchFixture))
+		case "/us/search":
+			w.Write([]byte(webAlbumSearchFixture))
+		case "/lookup":
+			if got := r.URL.Query().Get("id"); got != "6780871189,1000000001" {
+				t.Errorf("lookup ids = %q, want album IDs deduplicated in page order", got)
+			}
+			w.Write([]byte(webAlbumLookupFixture))
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.Client())
+	c.baseURL = srv.URL
+	c.webBaseURL = srv.URL
+
+	tests := []struct {
+		title   string
+		artist  string
+		tracks  int
+		wantURL string // "" for ErrNotFound
+	}{
+		{"Abbey Road (2019 Mix)", "The Beatles", 17, "https://music.apple.com/us/album/abbey-road-2019-mix/1474815798"},
+		{"Abbey Road", "The Beatles", 17, "https://music.apple.com/us/album/abbey-road-2019-mix/1474815798"},
+		{"Abbey Road (Super Deluxe Edition)", "The Beatles", 40, "https://music.apple.com/us/album/abbey-road-super-deluxe-edition-2019-remix-remaster/1474833332"},
+		{"Une Bagga De Keta", "HET POMPSTATION", 1, "https://music.apple.com/us/album/une-bagga-de-keta-single/6780871189"},
+		{"Abbey Road", "George Benson", 0, ""},
+	}
+
+	for _, tt := range tests {
+		got, err := c.SearchAlbum(context.Background(), &platform.Album{Title: tt.title, Artists: []string{tt.artist}, TrackCount: tt.tracks})
+		if tt.wantURL == "" {
+			if !errors.Is(err, platform.ErrNotFound) {
+				t.Errorf("SearchAlbum(%q, %q): err = %v, want ErrNotFound", tt.title, tt.artist, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("SearchAlbum(%q, %q): %v", tt.title, tt.artist, err)
+			continue
+		}
+		if got.URL != tt.wantURL {
+			t.Errorf("SearchAlbum(%q, %q) = %s, want %s", tt.title, tt.artist, got.URL, tt.wantURL)
+		}
 	}
 }
