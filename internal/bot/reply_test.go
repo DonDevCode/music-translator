@@ -171,3 +171,43 @@ func TestTargets(t *testing.T) {
 		t.Errorf("targets of album with only YouTube Music to search = %v, want none", got)
 	}
 }
+
+// videoPlatform is a VideoPlatform whose videos all contain track, or aren't
+// music if track is nil.
+type videoPlatform struct {
+	namedPlatform
+	track *platform.Track
+}
+
+func (p videoPlatform) ParseVideoURL(*url.URL) (string, bool) { return "", false }
+func (p videoPlatform) LookupVideo(context.Context, string) (*platform.Track, error) {
+	if p.track == nil {
+		return nil, platform.ErrNotMusic
+	}
+	return p.track, nil
+}
+
+func TestTranslateVideo(t *testing.T) {
+	apple := namedPlatform("Apple Music")
+	youtube := videoPlatform{"YouTube Music", &platform.Track{
+		Title:   "Song",
+		Artists: []string{"Artist"},
+		Year:    2001,
+		URL:     "https://music.youtube.com/watch?v=x",
+	}}
+	b := &Bot{platforms: []platform.Platform{apple, youtube}}
+
+	got, err := b.translate(platform.Link{Platform: youtube, Kind: platform.KindVideo, ID: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "**Song** – Artist · 2001\nNot found on Apple Music"; got != want {
+		t.Errorf("translate = %q, want %q", got, want)
+	}
+
+	notMusic := videoPlatform{"YouTube Music", nil}
+	b.platforms = []platform.Platform{apple, notMusic}
+	if _, err := b.translate(platform.Link{Platform: notMusic, Kind: platform.KindVideo, ID: "x"}); !errors.Is(err, platform.ErrNotMusic) {
+		t.Errorf("translate of video that isn't music: err = %v, want ErrNotMusic", err)
+	}
+}

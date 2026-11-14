@@ -9,8 +9,8 @@ import (
 	"github.com/DonDevCode/music-translator/internal/platform"
 )
 
-// translate looks up the linked track or album, searches for it on all
-// other platforms and returns the reply text.
+// translate looks up the linked track, album or video, searches for it on
+// all other platforms and returns the reply text.
 func (b *Bot) translate(link platform.Link) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), linkTimeout)
 	defer cancel()
@@ -19,7 +19,13 @@ func (b *Bot) translate(link platform.Link) (string, error) {
 		return b.translateAlbum(ctx, link)
 	}
 
-	source, err := link.Platform.Lookup(ctx, link.ID)
+	var source *platform.Track
+	var err error
+	if link.Kind == platform.KindVideo {
+		source, err = link.Platform.(platform.VideoPlatform).LookupVideo(ctx, link.ID)
+	} else {
+		source, err = link.Platform.Lookup(ctx, link.ID)
+	}
 	if err != nil {
 		return "", err
 	}

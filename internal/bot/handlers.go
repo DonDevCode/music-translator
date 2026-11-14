@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"errors"
 	"log"
 	"slices"
 	"sync"
@@ -50,6 +51,10 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 	sentRateLimits := map[string]bool{}
 	for i, link := range links {
 		reply, err := replies[i], errs[i]
+		// Videos that aren't music are expected and ignored.
+		if errors.Is(err, platform.ErrNotMusic) {
+			continue
+		}
 		if err != nil {
 			log.Printf("Looking up %s %s %s: %v", link.Platform.Name(), kindName(link.Kind), link.ID, err)
 
@@ -78,8 +83,11 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 }
 
 func kindName(k platform.Kind) string {
-	if k == platform.KindAlbum {
+	switch k {
+	case platform.KindAlbum:
 		return "album"
+	case platform.KindVideo:
+		return "video"
 	}
 	return "track"
 }
