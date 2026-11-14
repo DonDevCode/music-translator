@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/DonDevCode/music-translator/internal/platform"
@@ -23,6 +24,8 @@ const (
 	// albumsFilter limits a search to albums, EPs and singles, like the
 	// "Albums" chip on the website.
 	albumsFilter = "EgWKAQIYAWoKEAkQBRAKEAMQBA%3D%3D"
+	// songsFilter limits a search to songs, like the "Songs" chip.
+	songsFilter = "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"
 )
 
 // The language and country of the results. Album types ("Album", "Single")
@@ -59,13 +62,19 @@ type innerTubeSearchResponse struct {
 }
 
 // listItem is a search result row: the title in the first column and
-// "Album • Artist • 1969" in the second.
+// details in the second, "Album • Artist • 1969" for albums and
+// "Artist • Album • 2:51" for songs.
 type listItem struct {
 	FlexColumns []struct {
 		Column struct {
 			Text struct {
 				Runs []struct {
-					Text string `json:"text"`
+					Text     string `json:"text"`
+					Endpoint struct {
+						Browse struct {
+							BrowseID string `json:"browseId"`
+						} `json:"browseEndpoint"`
+					} `json:"navigationEndpoint"`
 				} `json:"runs"`
 			} `json:"text"`
 		} `json:"musicResponsiveListItemFlexColumnRenderer"`
@@ -93,10 +102,14 @@ type innerTubeBrowseResponse struct {
 	} `json:"microformat"`
 }
 
+// artistSeparatorPattern separates the artists in a search result row.
+var artistSeparatorPattern = regexp.MustCompile(`, | & `)
+
 // albumTypes are the release types shown in search results.
 var albumTypes = map[string]bool{"Album": true, "EP": true, "Single": true}
 
-// foundAlbum is an album search result with its playlist ID.
+// foundAlbum is an album search result with its playlist ID, or with its
+// browse ID if it was found through one of its songs.
 type foundAlbum struct {
 	id    string
 	album *platform.Album
@@ -105,22 +118,59 @@ type foundAlbum struct {
 // searchAlbums returns the albums that the website finds for query, in
 // order. Their track counts are unknown.
 func (c *Client) searchAlbums(ctx context.Context, query string) ([]foundAlbum, error) {
-	var body innerTubeSearchResponse
-	if err := c.innerTube(ctx, "/search", map[string]any{"query": query, "params": albumsFilter}, &body); err != nil {
+	rows, err := c.search(ctx, query, albumsFilter)
+	if err != nil {
 		return nil, err
 	}
 
 	var albums []foundAlbum
-	for _, tab := range body.Contents.TabbedSearchResultsRenderer.Tabs {
-		for _, section := range tab.TabRenderer.Content.SectionListRenderer.Contents {
-			for _, row := range section.MusicShelfRenderer.Contents {
-				if a, ok := parseListItem(row.Item); ok {
-					albums = append(albums, a)
-				}
-			}
+	for _, row := range rows {
+		if a, ok := parseListItem(row); ok {
+			albums = append(albums, a)
 		}
 	}
 	return albums, nil
+}
+
+// searchSongAlbums returns the albums of the songs that the website finds
+// for query, in order and without duplicates. The album search misses some
+// releases, such as new singles, whose songs can already be found. The
+// albums have browse IDs instead of playlist IDs and no URL, year or track
+// count.
+func (c *Client) searchSongAlbums(ctx context.Context, query string) ([]foundAlbum, error) {
+	rows, err := c.search(ctx, query, songsFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	var albums []foundAlbum
+	seen := map[string]bool{}
+	for _, row := range rows {
+		if a, ok := parseSongItem(row); ok && !seen[a.id] {
+			seen[a.id] = true
+			albums = append(albums, a)
+		}
+	}
+	return albums, nil
+}
+
+// search returns the result rows that the website finds for query with a
+// search filter.
+func (c *Client) search(ctx context.Context, query, filter string) ([]listItem, error) {
+	var body innerTubeSearchResponse
+	if err := c.innerTube(ctx, "/search", map[string]any{"query": query, "params": filter}, &body); err != nil {
+		return nil, err
+	}
+
+	var rows []listItem
+	for _, tab := range body.Contents.TabbedSearchResultsRenderer.Tabs {
+		for _, section := range tab.TabRenderer.Content.SectionListRenderer.Contents {
+			for _, row := range section.MusicShelfRenderer.Contents {
+				rows = append(rows, row.Item)
+			}
+		}
+	}
+	return rows, nil
 }
 
 // parseListItem returns the album in a search result row, or false if the
@@ -137,7 +187,9 @@ func parseListItem(item listItem) (foundAlbum, bool) {
 	}
 
 	// Multiple artists are separate runs, joined by ", " and " & " runs, so
-	// the runs are joined before splitting at the " • " separators.
+	// the runs are joined before splitting at the " • " separators. The
+	// artists are then split again, because other platforms may list them in
+	// another order.
 	var details strings.Builder
 	for _, run := range item.FlexColumns[1].Column.Text.Runs {
 		details.WriteString(run.Text)
@@ -147,11 +199,35 @@ func parseListItem(item listItem) (foundAlbum, bool) {
 		return foundAlbum{}, false
 	}
 
-	a := &platform.Album{Title: title.String(), Artists: []string{parts[1]}, URL: albumURL(id)}
+	a := &platform.Album{Title: title.String(), Artists: artistSeparatorPattern.Split(parts[1], -1), URL: albumURL(id)}
 	if len(parts) > 2 {
 		a.Year = platform.ParseYear(parts[len(parts)-1])
 	}
 	return foundAlbum{id: id, album: a}, true
+}
+
+// parseSongItem returns the album of the song in a search result row, or
+// false if the row has no album. The album is the run that links to an
+// album page, and the artists are the part before the first " • ".
+func parseSongItem(item listItem) (foundAlbum, bool) {
+	if len(item.FlexColumns) < 2 {
+		return foundAlbum{}, false
+	}
+
+	var details strings.Builder
+	var a foundAlbum
+	for _, run := range item.FlexColumns[1].Column.Text.Runs {
+		details.WriteString(run.Text)
+		if id := run.Endpoint.Browse.BrowseID; browseIDPattern.MatchString(id) {
+			a = foundAlbum{id: id, album: &platform.Album{Title: run.Text}}
+		}
+	}
+	artists, _, found := strings.Cut(details.String(), " • ")
+	if a.album == nil || !found {
+		return foundAlbum{}, false
+	}
+	a.album.Artists = artistSeparatorPattern.Split(artists, -1)
+	return a, true
 }
 
 // resolveBrowseID returns the playlist ID of the album page with the given

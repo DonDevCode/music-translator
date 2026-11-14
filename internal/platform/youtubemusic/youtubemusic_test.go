@@ -410,6 +410,25 @@ func innerTubeRow(playlistID, title string, details ...string) string {
 		title, strings.Join(runs, ","), playlistID)
 }
 
+// innerTubeSongRow builds a song search result row with an album link, like
+// those in InnerTube song searches.
+func innerTubeSongRow(title string, artists []string, album, browseID string) string {
+	var runs []string
+	for i, a := range artists {
+		if i > 0 {
+			runs = append(runs, `{"text":", "}`)
+		}
+		runs = append(runs, fmt.Sprintf(`{"text":%q,"navigationEndpoint":{"browseEndpoint":{"browseId":"UC123"}}}`, a))
+	}
+	runs = append(runs, `{"text":" • "}`,
+		fmt.Sprintf(`{"text":%q,"navigationEndpoint":{"browseEndpoint":{"browseId":%q}}}`, album, browseID),
+		`{"text":" • "}`, `{"text":"2:51"}`)
+	return fmt.Sprintf(`{"musicResponsiveListItemRenderer":{"flexColumns":[
+    {"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":%q}]}}},
+    {"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[%s]}}}]}}`,
+		title, strings.Join(runs, ","))
+}
+
 // innerTubeSearch wraps rows like a real InnerTube search response, which
 // has an info message before the results.
 func innerTubeSearch(rows ...string) string {
@@ -419,12 +438,14 @@ func innerTubeSearch(rows ...string) string {
 }
 
 // Real results for "The Beatles Abbey Road", plus an EP with several
-// artists.
+// artists and a real single whose artists Apple Music lists in another
+// order.
 var albumSearchFixture = innerTubeSearch(
 	innerTubeRow("OLAK5uy_l4Z8njnOK_Q-MOVqKoq9tU98JqO20Mvnw", "Abbey Road (2019 Mix)", "Album", " • ", "The Beatles", " • ", "1969"),
 	innerTubeRow("OLAK5uy_lqcFZTOPHGwcnP0nYMzNuY0IES0fl7Fe4", "Abbey Road (Super Deluxe Edition)", "Album", " • ", "The Beatles", " • ", "1969"),
 	innerTubeRow("OLAK5uy_meJj8ThnxrNx-U6ZTxF2I7lpPfXCG2uQw", "Guitar Tribute To The Beatles' Abbey Road", "Album", " • ", "Autumn 33", " • ", "2005"),
 	innerTubeRow("OLAK5uy_ep", "Split", "EP", " • ", "A", ", ", "B", " & ", "C", " • ", "2020"),
+	innerTubeRow("OLAK5uy_nm24XpO2k4UE0Sv_WvPO2siwQ-kS2NiBY", "Une Bagga De Keta", "Single", " • ", "HET POMPSTATION", ", ", "Unicorn on K", " & ", "Opgekonkerd", " • ", "2026"),
 	innerTubeRow("PLnotanalbum", "Abbey Road", "Playlist", " • ", "Someone"),
 )
 
@@ -432,7 +453,8 @@ const trackCountsFixture = `{"items":[
   {"id":"OLAK5uy_l4Z8njnOK_Q-MOVqKoq9tU98JqO20Mvnw","contentDetails":{"itemCount":17}},
   {"id":"OLAK5uy_lqcFZTOPHGwcnP0nYMzNuY0IES0fl7Fe4","contentDetails":{"itemCount":40}},
   {"id":"OLAK5uy_meJj8ThnxrNx-U6ZTxF2I7lpPfXCG2uQw","contentDetails":{"itemCount":17}},
-  {"id":"OLAK5uy_ep","contentDetails":{"itemCount":4}}]}`
+  {"id":"OLAK5uy_ep","contentDetails":{"itemCount":4}},
+  {"id":"OLAK5uy_nm24XpO2k4UE0Sv_WvPO2siwQ-kS2NiBY","contentDetails":{"itemCount":1}}]}`
 
 func TestSearchAlbum(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -443,6 +465,10 @@ func TestSearchAlbum(t *testing.T) {
 				Params string `json:"params"`
 			}
 			json.NewDecoder(r.Body).Decode(&req)
+			if req.Params == songsFilter {
+				w.Write([]byte(innerTubeSearch()))
+				return
+			}
 			if req.Params != albumsFilter {
 				t.Errorf("search params = %q, want the albums filter", req.Params)
 			}
@@ -452,7 +478,7 @@ func TestSearchAlbum(t *testing.T) {
 			}
 			w.Write([]byte(albumSearchFixture))
 		case "/playlists":
-			want := "OLAK5uy_l4Z8njnOK_Q-MOVqKoq9tU98JqO20Mvnw,OLAK5uy_lqcFZTOPHGwcnP0nYMzNuY0IES0fl7Fe4,OLAK5uy_meJj8ThnxrNx-U6ZTxF2I7lpPfXCG2uQw,OLAK5uy_ep"
+			want := "OLAK5uy_l4Z8njnOK_Q-MOVqKoq9tU98JqO20Mvnw,OLAK5uy_lqcFZTOPHGwcnP0nYMzNuY0IES0fl7Fe4,OLAK5uy_meJj8ThnxrNx-U6ZTxF2I7lpPfXCG2uQw,OLAK5uy_ep,OLAK5uy_nm24XpO2k4UE0Sv_WvPO2siwQ-kS2NiBY"
 			if got := r.URL.Query().Get("id"); got != want {
 				t.Errorf("playlists ids = %q, want %q", got, want)
 			}
@@ -476,6 +502,7 @@ func TestSearchAlbum(t *testing.T) {
 		{"Abbey Road (Remastered)", "The Beatles", 19, "https://music.youtube.com/playlist?list=OLAK5uy_l4Z8njnOK_Q-MOVqKoq9tU98JqO20Mvnw"},
 		{"Abbey Road (Super Deluxe Edition) [2019 Remix & Remaster]", "The Beatles", 40, "https://music.youtube.com/playlist?list=OLAK5uy_lqcFZTOPHGwcnP0nYMzNuY0IES0fl7Fe4"},
 		{"Split", "B", 4, "https://music.youtube.com/playlist?list=OLAK5uy_ep"},
+		{"Une Bagga De Keta", "HET POMPSTATION, Opgekonkerd & Unicorn On K", 1, "https://music.youtube.com/playlist?list=OLAK5uy_nm24XpO2k4UE0Sv_WvPO2siwQ-kS2NiBY"},
 		{"Abbey Road", "George Benson", 17, ""},
 		{"Nothing", "Nobody", 1, ""},
 	}
@@ -511,6 +538,68 @@ func TestSearchAlbum(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("SearchAlbum = %+v, want %+v", got, want)
+	}
+}
+
+func TestSearchAlbumBySongs(t *testing.T) {
+	const singleID = "OLAK5uy_nm24XpO2k4UE0Sv_WvPO2siwQ-kS2NiBY"
+	// Real results for the single, which the album search doesn't find, and
+	// an album named after another song.
+	songs := innerTubeSearch(
+		innerTubeSongRow("Une Bagga De Keta", []string{"HET POMPSTATION", "Unicorn on K", "Opgekonkerd"}, "Une Bagga De Keta", "MPREb_CuVPiUlrUHa"),
+		innerTubeSongRow("Costa De Keta", []string{"HET POMPSTATION", "Pinotello"}, "Costa De Keta", "MPREb_GJRDSrpRJFH"),
+		innerTubeSongRow("Title Track", []string{"Artist"}, "Title Track", "MPREb_bigalbum"),
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/innertube/search":
+			var req struct {
+				Params string `json:"params"`
+			}
+			json.NewDecoder(r.Body).Decode(&req)
+			if req.Params == songsFilter {
+				w.Write([]byte(songs))
+			} else {
+				w.Write([]byte(innerTubeSearch()))
+			}
+		case "/innertube/browse":
+			var req struct {
+				BrowseID string `json:"browseId"`
+			}
+			json.NewDecoder(r.Body).Decode(&req)
+			list := map[string]string{"MPREb_CuVPiUlrUHa": singleID, "MPREb_bigalbum": "OLAK5uy_bigalbum"}[req.BrowseID]
+			fmt.Fprintf(w, `{"microformat":{"microformatDataRenderer":{"urlCanonical":"https://music.youtube.com/playlist?list=%s"}}}`, list)
+		case "/playlists":
+			counts := map[string]int{singleID: 1, "OLAK5uy_bigalbum": 14}
+			id := r.URL.Query().Get("id")
+			fmt.Fprintf(w, `{"items":[{"id":%q,"contentDetails":{"itemCount":%d}}]}`, id, counts[id])
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.Client(), "secret")
+	c.baseURL = srv.URL
+	c.innerTubeURL = srv.URL + "/innertube"
+
+	got, err := c.SearchAlbum(context.Background(), &platform.Album{Title: "Une Bagga De Keta", Artists: []string{"HET POMPSTATION, Opgekonkerd & Unicorn On K"}, TrackCount: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &platform.Album{
+		Title:      "Une Bagga De Keta",
+		Artists:    []string{"HET POMPSTATION", "Unicorn on K", "Opgekonkerd"},
+		TrackCount: 1,
+		URL:        "https://music.youtube.com/playlist?list=" + singleID,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SearchAlbum = %+v, want %+v", got, want)
+	}
+
+	// The single "Title Track" isn't the album of the same name.
+	if _, err := c.SearchAlbum(context.Background(), &platform.Album{Title: "Title Track", Artists: []string{"Artist"}, TrackCount: 1}); !errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("SearchAlbum of single named like an album: err = %v, want ErrNotFound", err)
 	}
 }
 

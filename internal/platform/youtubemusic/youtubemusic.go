@@ -276,6 +276,9 @@ func albumArtists(tracks []*platform.Track) []string {
 // unit. The counts only help to tell releases apart, so if they can't be
 // fetched (e.g. because the quota is used up) the albums are matched without
 // them.
+//
+// If the album search finds no match, the albums of matching songs are tried,
+// since the album search misses some releases.
 func (c *Client) SearchAlbum(ctx context.Context, a *platform.Album) (*platform.Album, error) {
 	q := a.Title
 	if len(a.Artists) > 0 {
@@ -286,8 +289,38 @@ func (c *Client) SearchAlbum(ctx context.Context, a *platform.Album) (*platform.
 	if err != nil {
 		return nil, err
 	}
-	if len(found) == 0 {
+	if best := c.bestAlbum(ctx, a, found, q); best != nil {
+		return best.album, nil
+	}
+
+	found, err = c.searchSongAlbums(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	best := platform.BestAlbumMatch(a, albumsOf(found))
+	if best == nil {
 		return nil, platform.ErrNotFound
+	}
+	browseID := found[slices.IndexFunc(found, func(f foundAlbum) bool { return f.album == best })].id
+	id, err := c.resolveBrowseID(ctx, browseID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Without its track count the album may be a different release with the
+	// same title, e.g. the album named after a single, so it is checked again.
+	best.URL = albumURL(id)
+	if match := c.bestAlbum(ctx, a, []foundAlbum{{id: id, album: best}}, q); match != nil {
+		return match.album, nil
+	}
+	return nil, platform.ErrNotFound
+}
+
+// bestAlbum adds the track counts to the found albums and returns the best
+// match for a, or nil. q is only used for logging.
+func (c *Client) bestAlbum(ctx context.Context, a *platform.Album, found []foundAlbum, q string) *foundAlbum {
+	if len(found) == 0 {
+		return nil
 	}
 	if len(found) > maxAlbumResults {
 		found = found[:maxAlbumResults]
@@ -296,14 +329,19 @@ func (c *Client) SearchAlbum(ctx context.Context, a *platform.Album) (*platform.
 	if err := c.addTrackCounts(ctx, found); err != nil {
 		log.Printf("Fetching YouTube track counts for %q: %v", q, err)
 	}
-	candidates := make([]*platform.Album, len(found))
+	best := platform.BestAlbumMatch(a, albumsOf(found))
+	if best == nil {
+		return nil
+	}
+	return &found[slices.IndexFunc(found, func(f foundAlbum) bool { return f.album == best })]
+}
+
+func albumsOf(found []foundAlbum) []*platform.Album {
+	albums := make([]*platform.Album, len(found))
 	for i, f := range found {
-		candidates[i] = f.album
+		albums[i] = f.album
 	}
-	if best := platform.BestAlbumMatch(a, candidates); best != nil {
-		return best, nil
-	}
-	return nil, platform.ErrNotFound
+	return albums
 }
 
 // maxAlbumResults limits how many album search results are considered. The
