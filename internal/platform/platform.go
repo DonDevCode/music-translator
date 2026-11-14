@@ -46,7 +46,8 @@ type Platform interface {
 	Search(ctx context.Context, t *Track) (*Track, error)
 }
 
-// AlbumPlatform is a Platform that can also recognize and link to albums.
+// AlbumPlatform is a Platform that can also recognize album links, so they
+// can be translated to platforms that implement AlbumSearcher.
 type AlbumPlatform interface {
 	Platform
 	// ParseAlbumURL returns the album ID if u links to an album on this
@@ -54,6 +55,12 @@ type AlbumPlatform interface {
 	ParseAlbumURL(u *url.URL) (id string, ok bool)
 	// LookupAlbum fetches the album with the given ID.
 	LookupAlbum(ctx context.Context, id string) (*Album, error)
+}
+
+// AlbumSearcher is an AlbumPlatform that album links from other platforms
+// can be translated to.
+type AlbumSearcher interface {
+	AlbumPlatform
 	// SearchAlbum finds the same album as a on this platform. It returns
 	// ErrNotFound if there is no confident match.
 	SearchAlbum(ctx context.Context, a *Album) (*Album, error)

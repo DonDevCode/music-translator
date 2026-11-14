@@ -39,7 +39,7 @@ func (b *Bot) translateAlbum(ctx context.Context, link platform.Link) (string, e
 	// The reply only needs the link and year of what was found, which an
 	// album shares with a track.
 	results := searchAll(ctx, b.targets(link), source.Title, func(p platform.Platform) (*platform.Track, error) {
-		album, err := p.(platform.AlbumPlatform).SearchAlbum(ctx, source)
+		album, err := p.(platform.AlbumSearcher).SearchAlbum(ctx, source)
 		if err != nil {
 			return nil, err
 		}
@@ -48,15 +48,15 @@ func (b *Bot) translateAlbum(ctx context.Context, link platform.Link) (string, e
 	return formatAlbumReply(source, results), nil
 }
 
-// targets returns the platforms to translate link to: all others that
-// support its kind.
+// targets returns the platforms to translate link to: all others that can
+// search for its kind.
 func (b *Bot) targets(link platform.Link) []platform.Platform {
 	var targets []platform.Platform
 	for _, p := range b.platforms {
 		if p == link.Platform {
 			continue
 		}
-		if _, ok := p.(platform.AlbumPlatform); link.Kind == platform.KindAlbum && !ok {
+		if _, ok := p.(platform.AlbumSearcher); link.Kind == platform.KindAlbum && !ok {
 			continue
 		}
 		targets = append(targets, p)

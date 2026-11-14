@@ -45,7 +45,7 @@ var (
 
 // Client is the Apple Music platform. It needs no credentials.
 //
-// It implements platform.AlbumPlatform.
+// It implements platform.AlbumSearcher.
 type Client struct {
 	http       *http.Client
 	baseURL    string
@@ -238,7 +238,7 @@ func (c *Client) Search(ctx context.Context, t *platform.Track) (*platform.Track
 	})
 }
 
-// SearchAlbum implements platform.AlbumPlatform. Like Search, it falls back
+// SearchAlbum implements platform.AlbumSearcher. Like Search, it falls back
 // to the Apple Music website.
 func (c *Client) SearchAlbum(ctx context.Context, a *platform.Album) (*platform.Album, error) {
 	return search(ctx, c, searchTerm(a.Title, a.Artists), albums, func(results []result) *platform.Album {

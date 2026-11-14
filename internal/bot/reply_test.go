@@ -88,13 +88,18 @@ func TestFormatReply(t *testing.T) {
 	}
 }
 
-// albumPlatform is a namedPlatform that supports albums.
-type albumPlatform struct{ namedPlatform }
+// albumLinkPlatform is a namedPlatform that recognizes album links but
+// can't search for albums.
+type albumLinkPlatform struct{ namedPlatform }
 
-func (p albumPlatform) ParseAlbumURL(*url.URL) (string, bool) { return "", false }
-func (p albumPlatform) LookupAlbum(context.Context, string) (*platform.Album, error) {
+func (p albumLinkPlatform) ParseAlbumURL(*url.URL) (string, bool) { return "", false }
+func (p albumLinkPlatform) LookupAlbum(context.Context, string) (*platform.Album, error) {
 	return nil, platform.ErrNotFound
 }
+
+// albumPlatform is a namedPlatform with full album support.
+type albumPlatform struct{ albumLinkPlatform }
+
 func (p albumPlatform) SearchAlbum(context.Context, *platform.Album) (*platform.Album, error) {
 	return nil, platform.ErrNotFound
 }
@@ -138,9 +143,9 @@ func TestFormatAlbumReply(t *testing.T) {
 }
 
 func TestTargets(t *testing.T) {
-	apple := albumPlatform{"Apple Music"}
-	spotify := albumPlatform{"Spotify"}
-	youtube := namedPlatform("YouTube Music")
+	apple := albumPlatform{albumLinkPlatform{"Apple Music"}}
+	spotify := albumPlatform{albumLinkPlatform{"Spotify"}}
+	youtube := albumLinkPlatform{"YouTube Music"}
 	b := &Bot{platforms: []platform.Platform{apple, youtube, spotify}}
 
 	tests := []struct {
@@ -150,7 +155,7 @@ func TestTargets(t *testing.T) {
 	}{
 		{"track", platform.Link{Platform: apple, Kind: platform.KindTrack}, []platform.Platform{youtube, spotify}},
 		{"album", platform.Link{Platform: apple, Kind: platform.KindAlbum}, []platform.Platform{spotify}},
-		{"album without other album platform", platform.Link{Platform: spotify, Kind: platform.KindAlbum}, []platform.Platform{apple}},
+		{"album from platform that can't search albums", platform.Link{Platform: youtube, Kind: platform.KindAlbum}, []platform.Platform{apple, spotify}},
 	}
 
 	for _, tt := range tests {
@@ -163,6 +168,6 @@ func TestTargets(t *testing.T) {
 
 	b.platforms = []platform.Platform{apple, youtube}
 	if got := b.targets(platform.Link{Platform: apple, Kind: platform.KindAlbum}); len(got) != 0 {
-		t.Errorf("targets of album with only YouTube Music = %v, want none", got)
+		t.Errorf("targets of album with only YouTube Music to search = %v, want none", got)
 	}
 }

@@ -32,7 +32,7 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 
 	// Links are independent, so they are resolved concurrently, but the
 	// replies are sent in the order the links appear.
-	// Album links are skipped while no other platform supports albums.
+	// Album links are skipped while no other platform can search for albums.
 	links := slices.DeleteFunc(platform.FindLinks(m.Content, b.platforms, maxLinksPerMessage),
 		func(link platform.Link) bool { return len(b.targets(link)) == 0 })
 	replies := make([]string, len(links))
