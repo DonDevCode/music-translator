@@ -2,6 +2,8 @@
 
 A Discord bot that recognizes music links (~~Spotify~~, Apple Music, YouTube Music, …) in chat and replies with links to the same track on other platforms.
 
+Examples are available [here](./docs/examples.md)
+
 ## Setup
 
 1. Create an application and bot at <https://discord.com/developers/applications> and enable the **Message Content** intent.
