@@ -13,7 +13,7 @@ import (
 )
 
 // maxLinksPerMessage limits how many replies a single message can trigger.
-const maxLinksPerMessage = 3
+const maxLinksPerMessage = 2
 
 // maxVideoLinksPerMessage limits how many video links of a single message
 // are looked up. They count separately, since many videos aren't music.
