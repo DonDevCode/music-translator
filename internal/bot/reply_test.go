@@ -187,8 +187,18 @@ func (p videoPlatform) LookupVideo(context.Context, string) (*platform.Track, er
 	return p.track, nil
 }
 
+// findingPlatform is a namedPlatform that finds every track at url.
+type findingPlatform struct {
+	namedPlatform
+	url string
+}
+
+func (p findingPlatform) Search(_ context.Context, t *platform.Track) (*platform.Track, error) {
+	return &platform.Track{Title: t.Title, Artists: t.Artists, URL: p.url}, nil
+}
+
 func TestTranslateVideo(t *testing.T) {
-	apple := namedPlatform("Apple Music")
+	apple := findingPlatform{"Apple Music", "https://music.apple.com/song/1"}
 	youtube := videoPlatform{"YouTube Music", &platform.Track{
 		Title:   "Song",
 		Artists: []string{"Artist"},
@@ -196,13 +206,20 @@ func TestTranslateVideo(t *testing.T) {
 		URL:     "https://music.youtube.com/watch?v=x",
 	}}
 	b := &Bot{platforms: []platform.Platform{apple, youtube}}
+	link := platform.Link{Platform: youtube, Kind: platform.KindVideo, ID: "x"}
 
-	got, err := b.translate(platform.Link{Platform: youtube, Kind: platform.KindVideo, ID: "x"})
+	got, err := b.translate(link)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "**Song** – Artist · 2001\nNot found on Apple Music"; got != want {
+	want := "**Song** – Artist · 2001\nYouTube Music: https://music.youtube.com/watch?v=x\nApple Music: https://music.apple.com/song/1"
+	if got != want {
 		t.Errorf("translate = %q, want %q", got, want)
+	}
+
+	b.platforms = []platform.Platform{namedPlatform("Apple Music"), youtube}
+	if _, err := b.translate(link); !errors.Is(err, errNoMatch) {
+		t.Errorf("translate of video found nowhere else: err = %v, want errNoMatch", err)
 	}
 
 	notMusic := videoPlatform{"YouTube Music", nil}

@@ -76,7 +76,7 @@ func TestFindLinks(t *testing.T) {
 	tests := []struct {
 		name    string
 		content string
-		limit   int
+		limit   int // videoLimit is 2
 		want    []Link
 	}{
 		{"no links", "hello there", 3, nil},
@@ -96,13 +96,16 @@ func TestFindLinks(t *testing.T) {
 		{"video", "https://video.test/1", 3, []Link{video(v, "1")}},
 		{"video and track", "https://video.test/1 https://v.test/2", 3, []Link{video(v, "1"), track(v, "2")}},
 		{"same video as track", "https://v.test/1 https://video.test/1", 3, []Link{track(v, "1")}},
-		{"same track as video", "https://video.test/1 https://v.test/1", 3, []Link{video(v, "1")}},
+		{"same track as video", "https://video.test/1 https://v.test/1", 3, []Link{track(v, "1")}},
 		{"limit", "https://a.test/1 https://a.test/2 https://a.test/3", 2, []Link{track(a, "1"), track(a, "2")}},
+		{"videos don't count toward limit", "https://video.test/1 https://video.test/2 https://a.test/1 https://a.test/2", 1, []Link{video(v, "1"), video(v, "2"), track(a, "1")}},
+		{"video limit", "https://video.test/1 https://video.test/2 https://video.test/3 https://a.test/1", 1, []Link{video(v, "1"), video(v, "2"), track(a, "1")}},
+		{"uppercase host", "https://A.Test/1", 3, []Link{track(a, "1")}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := FindLinks(tt.content, platforms, tt.limit)
+			got := FindLinks(tt.content, platforms, tt.limit, 2)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("FindLinks(%q) = %v, want %v", tt.content, got, tt.want)
 			}

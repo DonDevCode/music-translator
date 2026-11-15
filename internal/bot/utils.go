@@ -4,10 +4,16 @@ import (
 	"context"
 	"errors"
 	"log"
+	"slices"
 	"sync"
 
 	"github.com/DonDevCode/music-translator/internal/platform"
 )
+
+// errNoMatch is returned by translate for a video that no other platform has.
+// Many videos in the Music category are covers, mixes and other uploads that
+// exist only on YouTube, and a reply about them would be noise.
+var errNoMatch = errors.New("video not found on other platforms")
 
 // translate looks up the linked track, album or video, searches for it on
 // all other platforms and returns the reply text.
@@ -37,6 +43,14 @@ func (b *Bot) translate(link platform.Link) (string, error) {
 		}
 		return track.URL, track.Year, nil
 	})
+	if link.Kind == platform.KindVideo {
+		if !slices.ContainsFunc(results, func(r result) bool { return r.url != "" }) {
+			return "", errNoMatch
+		}
+		// The video link doesn't open in YouTube Music, so its track there is
+		// linked too.
+		results = append([]result{{platform: link.Platform, url: source.URL}}, results...)
+	}
 	return formatReply(source, results), nil
 }
 

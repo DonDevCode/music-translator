@@ -658,6 +658,8 @@ func TestParseVideoURL(t *testing.T) {
 		{"https://youtu.be/fJ9rUzIMcZQ?si=abc123", "fJ9rUzIMcZQ", true},
 		{"https://www.youtube.com/shorts/fJ9rUzIMcZQ", "fJ9rUzIMcZQ", true},
 		{"https://www.youtube.com/live/fJ9rUzIMcZQ?feature=share", "fJ9rUzIMcZQ", true},
+		{"https://youtu.be/fJ9rUzIMcZQ/", "fJ9rUzIMcZQ", true},
+		{"https://www.youtube.com/shorts/fJ9rUzIMcZQ/", "fJ9rUzIMcZQ", true},
 		{"https://www.youtube.com/watch?v=tooshort", "", false},
 		{"https://youtu.be/", "", false},
 		{"https://www.youtube.com/channel/UC123456789", "", false},
@@ -862,6 +864,11 @@ func TestParsePanelVideo(t *testing.T) {
 			"song title with separator",
 			innerTubeNext("x", musicVideoType, "Paradise - Live", "Coldplay", " • ", "1M views"),
 			&watchVideo{musicVideoType, &platform.Track{Title: "Paradise - Live", Artists: []string{"Coldplay"}}},
+		},
+		{
+			"artist name inside a word of the title",
+			innerTubeNext("x", musicVideoType, "Asian Dub - Song", "Sia", " • ", "1M views"),
+			&watchVideo{musicVideoType, &platform.Track{Title: "Asian Dub - Song", Artists: []string{"Sia"}}},
 		},
 		{
 			"other video",

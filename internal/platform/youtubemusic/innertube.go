@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/DonDevCode/music-translator/internal/platform"
@@ -77,16 +78,7 @@ type innerTubeSearchResponse struct {
 type listItem struct {
 	FlexColumns []struct {
 		Column struct {
-			Text struct {
-				Runs []struct {
-					Text     string `json:"text"`
-					Endpoint struct {
-						Browse struct {
-							BrowseID string `json:"browseId"`
-						} `json:"browseEndpoint"`
-					} `json:"navigationEndpoint"`
-				} `json:"runs"`
-			} `json:"text"`
+			Text runs `json:"text"`
 		} `json:"musicResponsiveListItemFlexColumnRenderer"`
 	} `json:"flexColumns"`
 	Overlay struct {
@@ -105,6 +97,28 @@ type listItem struct {
 			} `json:"content"`
 		} `json:"musicItemThumbnailOverlayRenderer"`
 	} `json:"overlay"`
+}
+
+// runs is text made of runs, which are separate so that they can link to
+// different pages.
+type runs struct {
+	Runs []struct {
+		Text     string `json:"text"`
+		Endpoint struct {
+			Browse struct {
+				BrowseID string `json:"browseId"`
+			} `json:"browseEndpoint"`
+		} `json:"navigationEndpoint"`
+	} `json:"runs"`
+}
+
+// String returns the whole text.
+func (r runs) String() string {
+	var b strings.Builder
+	for _, run := range r.Runs {
+		b.WriteString(run.Text)
+	}
+	return b.String()
 }
 
 type innerTubeBrowseResponse struct {
@@ -145,17 +159,9 @@ type innerTubeNextResponse struct {
 // byline, "Artist • 2.1B views • 14M likes" for music videos and
 // "Artist • Album • 1987" for tracks.
 type panelVideo struct {
-	VideoID string `json:"videoId"`
-	Title   struct {
-		Runs []struct {
-			Text string `json:"text"`
-		} `json:"runs"`
-	} `json:"title"`
-	Byline struct {
-		Runs []struct {
-			Text string `json:"text"`
-		} `json:"runs"`
-	} `json:"longBylineText"`
+	VideoID  string `json:"videoId"`
+	Title    runs   `json:"title"`
+	Byline   runs   `json:"longBylineText"`
 	Endpoint struct {
 		Watch struct {
 			Configs struct {
@@ -254,25 +260,18 @@ func parseListItem(item listItem) (foundAlbum, bool) {
 		return foundAlbum{}, false
 	}
 
-	var title strings.Builder
-	for _, run := range item.FlexColumns[0].Column.Text.Runs {
-		title.WriteString(run.Text)
-	}
+	title := item.FlexColumns[0].Column.Text.String()
 
 	// Multiple artists are separate runs, joined by ", " and " & " runs, so
 	// the runs are joined before splitting at the " • " separators. The
 	// artists are then split again, because other platforms may list them in
 	// another order.
-	var details strings.Builder
-	for _, run := range item.FlexColumns[1].Column.Text.Runs {
-		details.WriteString(run.Text)
-	}
-	parts := strings.Split(details.String(), " • ")
+	parts := strings.Split(item.FlexColumns[1].Column.Text.String(), " • ")
 	if len(parts) < 2 || !albumTypes[parts[0]] {
 		return foundAlbum{}, false
 	}
 
-	a := &platform.Album{Title: title.String(), Artists: artistSeparatorPattern.Split(parts[1], -1), URL: albumURL(id)}
+	a := &platform.Album{Title: title, Artists: artistSeparatorPattern.Split(parts[1], -1), URL: albumURL(id)}
 	if len(parts) > 2 {
 		a.Year = platform.ParseYear(parts[len(parts)-1])
 	}
@@ -287,10 +286,9 @@ func parseSongItem(item listItem) (foundAlbum, bool) {
 		return foundAlbum{}, false
 	}
 
-	var details strings.Builder
+	details := item.FlexColumns[1].Column.Text
 	var a foundAlbum
-	for _, run := range item.FlexColumns[1].Column.Text.Runs {
-		details.WriteString(run.Text)
+	for _, run := range details.Runs {
 		if id := run.Endpoint.Browse.BrowseID; browseIDPattern.MatchString(id) {
 			a = foundAlbum{id: id, album: &platform.Album{Title: run.Text}}
 		}
@@ -311,18 +309,12 @@ func parseSongTrack(item listItem) (string, *platform.Track, bool) {
 		return "", nil, false
 	}
 
-	var title, details strings.Builder
-	for _, run := range item.FlexColumns[0].Column.Text.Runs {
-		title.WriteString(run.Text)
-	}
-	for _, run := range item.FlexColumns[1].Column.Text.Runs {
-		details.WriteString(run.Text)
-	}
-	artists, _, _ := strings.Cut(details.String(), " • ")
-	if title.Len() == 0 || artists == "" {
+	title := item.FlexColumns[0].Column.Text.String()
+	artists, _, _ := strings.Cut(item.FlexColumns[1].Column.Text.String(), " • ")
+	if title == "" || artists == "" {
 		return "", nil, false
 	}
-	return id, &platform.Track{Title: title.String(), Artists: artistSeparatorPattern.Split(artists, -1), URL: trackURL(id)}, true
+	return id, &platform.Track{Title: title, Artists: artistSeparatorPattern.Split(artists, -1), URL: trackURL(id)}, true
 }
 
 // watchInfo asks the YouTube Music website what the video with the given ID
@@ -353,11 +345,7 @@ func parsePanelVideo(v panelVideo) *watchVideo {
 		return w
 	}
 
-	var title strings.Builder
-	for _, run := range v.Title.Runs {
-		title.WriteString(run.Text)
-	}
-	t := &platform.Track{Title: strings.TrimSpace(tagPattern.ReplaceAllString(title.String(), ""))}
+	t := &platform.Track{Title: strings.TrimSpace(tagPattern.ReplaceAllString(v.Title.String(), ""))}
 
 	var parts []string
 	for _, run := range v.Byline.Runs {
@@ -390,15 +378,9 @@ func parsePanelVideo(v panelVideo) *watchVideo {
 	return w
 }
 
-// namesAny reports whether s contains any of the artists, ignoring case.
+// namesAny reports whether s names any of the artists as whole words.
 func namesAny(s string, artists []string) bool {
-	s = strings.ToLower(s)
-	for _, a := range artists {
-		if strings.Contains(s, strings.ToLower(a)) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(artists, func(a string) bool { return platform.ContainsName(s, a) })
 }
 
 // resolveBrowseID returns the playlist ID of the album page with the given

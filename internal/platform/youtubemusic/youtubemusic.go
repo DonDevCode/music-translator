@@ -83,7 +83,7 @@ func (c *Client) ParseVideoURL(u *url.URL) (string, bool) {
 	var id string
 	switch {
 	case u.Host == "youtu.be":
-		id = strings.TrimPrefix(u.Path, "/")
+		id = strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), "/")
 	case !videoHosts[u.Host]:
 		return "", false
 	case u.Path == "/watch":
@@ -91,7 +91,7 @@ func (c *Client) ParseVideoURL(u *url.URL) (string, bool) {
 	default:
 		for _, prefix := range []string{"/shorts/", "/live/"} {
 			if rest, ok := strings.CutPrefix(u.Path, prefix); ok {
-				id = rest
+				id = strings.TrimSuffix(rest, "/")
 			}
 		}
 	}
@@ -191,7 +191,22 @@ func (c *Client) LookupVideo(ctx context.Context, id string) (*platform.Track, e
 // track of its song is then looked for and returned instead, costing 1 more
 // unit. If the website can't tell, artist and title are guessed from the
 // video's title and channel.
+//
+// The website only needs the ID, so it is asked while the video is fetched.
+// Its answer is wasted on auto-generated tracks, but that costs no quota.
 func (c *Client) lookup(ctx context.Context, id string, requireMusic bool) (*platform.Track, error) {
+	watchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type watchResult struct {
+		video *watchVideo
+		err   error
+	}
+	watched := make(chan watchResult, 1)
+	go func() {
+		video, err := c.watchInfo(watchCtx, id)
+		watched <- watchResult{video, err}
+	}()
+
 	var body videosResponse
 	if err := c.get(ctx, "/videos", url.Values{"part": {"snippet"}, "id": {id}}, &body); err != nil {
 		return nil, err
@@ -206,7 +221,8 @@ func (c *Client) lookup(ctx context.Context, id string, requireMusic bool) (*pla
 	}
 
 	// The website only improves on the snippet, so its errors aren't fatal.
-	video, err := c.watchInfo(ctx, id)
+	w := <-watched
+	video, err := w.video, w.err
 	if err != nil {
 		log.Printf("Fetching YouTube Music details of video %s: %v", id, err)
 	}

@@ -107,15 +107,18 @@ const urlTrailers = ".,!?;:)]|*'\""
 
 var urlPattern = regexp.MustCompile(`https?://[^\s<>]+`)
 
-// FindLinks returns up to limit distinct track, album and video links in
-// content, in order of appearance. A video link to a track that is already
-// linked counts as the same link.
-func FindLinks(content string, platforms []Platform, limit int) []Link {
+// FindLinks returns the distinct track, album and video links in content, in
+// order of appearance: up to limit track and album links, and up to
+// videoLimit video links. Videos count separately because many of them turn
+// out not to be music. A video link and a track link to the same track count
+// as one link, the track link, which is always answered.
+func FindLinks(content string, platforms []Platform, limit, videoLimit int) []Link {
 	var links []Link
-	seen := make(map[string]bool)
+	seen := make(map[string]int) // link key to index in links
+	var count, videoCount int
 
 	for _, raw := range urlPattern.FindAllString(content, -1) {
-		if len(links) >= limit {
+		if count >= limit && videoCount >= videoLimit {
 			break
 		}
 
@@ -123,6 +126,8 @@ func FindLinks(content string, platforms []Platform, limit int) []Link {
 		if err != nil {
 			continue
 		}
+		// Hosts are case-insensitive, but platforms compare them exactly.
+		u.Host = strings.ToLower(u.Host)
 
 		for _, p := range platforms {
 			link, ok := parseLink(p, u)
@@ -134,9 +139,20 @@ func FindLinks(content string, platforms []Platform, limit int) []Link {
 				kind = KindTrack
 			}
 			key := fmt.Sprint(p.Name(), "\x00", kind, "\x00", link.ID)
-			if !seen[key] {
-				seen[key] = true
+			if i, ok := seen[key]; ok {
+				if links[i].Kind == KindVideo && link.Kind == KindTrack {
+					links[i] = link
+					videoCount--
+					count++
+				}
+			} else if link.Kind == KindVideo && videoCount < videoLimit {
+				seen[key] = len(links)
 				links = append(links, link)
+				videoCount++
+			} else if link.Kind != KindVideo && count < limit {
+				seen[key] = len(links)
+				links = append(links, link)
+				count++
 			}
 			break
 		}
