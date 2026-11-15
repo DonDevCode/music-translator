@@ -21,7 +21,7 @@ internal/config/    environment-based configuration
 internal/bot/       Discord session and event handlers
 internal/platform/  music platform abstraction and link detection
   applemusic/       Apple Music (iTunes Search/Lookup API + website search, no credentials)
-  youtubemusic/     YouTube Music (YouTube Data API v3 + YouTube Music's internal API for albums)
+  youtubemusic/     YouTube Music and YouTube videos (YouTube Data API v3 + YouTube Music's internal API for albums and music videos)
 ```
 
 ## Supported links
@@ -30,16 +30,17 @@ internal/platform/  music platform abstraction and link detection
 |---|---|
 | Apple Music | `music.apple.com/{country}/song/…/{id}`, `music.apple.com/{country}/album/…?i={trackId}`, albums: `music.apple.com/{country}/album/…/{albumId}` |
 | YouTube Music | `music.youtube.com/watch?v={id}`, albums: `music.youtube.com/playlist?list=OLAK5uy_…`, `music.youtube.com/browse/MPREb_…` |
+| YouTube | videos that are music: `youtube.com/watch?v={id}` (also `www.`, `m.`), `youtu.be/{id}`, `youtube.com/shorts/{id}`, `youtube.com/live/{id}` |
 
 Album links are translated to albums, so the album link of a single finds the single, not the song. If a platform only has the song on an album, the single is "not found" there.
 
 ## Notes
 
 - **Spotify support is postponed.** The Spotify Web API requires the developer account owner to have Spotify Premium, so Spotify links aren't supported yet.
-- **Short links are not supported yet** (e.g. `spotify.link`, `youtu.be`). They have to be resolved by following their redirect first.
-- **Regular YouTube links are ignored** (`youtube.com/watch`, `youtu.be`). They can point to any video, not just music, so only `music.youtube.com` links are recognized for now.
-- **YouTube metadata quality varies.** Tracks that YouTube auto-generates from official releases ("Artist - Topic" channels) have exact title, artists and release year. For other videos, artist and title are guessed from the video title and channel name, and the release year is taken from the other platforms.
-- **YouTube Music albums use an unofficial API.** The YouTube Data API's search doesn't return albums, so album searches and `browse/MPREb_…` links go through InnerTube, the internal API of the YouTube Music website. It needs no key and costs no quota, but it's undocumented and can change without notice; if it breaks, album replies show "Couldn't search YouTube Music". The client version it sends is in `internal/platform/youtubemusic/innertube.go` and may need bumping eventually. An album search costs 1 Data API quota unit (for track counts), looking up an album link 3.
+- **Short links that redirect are not supported yet** (e.g. `spotify.link`). They have to be resolved by following their redirect first. `youtu.be` links contain the video ID and work.
+- **YouTube video links are only answered if the video is music.** A video counts as music if YouTube Music knows it as a music video or track, if it's on an "Artist - Topic" channel, or if its uploader put it in the Music category. Other videos are ignored silently, and so are music uploads in other categories. Each YouTube link costs 1 quota unit even if the video turns out not to be music.
+- **YouTube metadata quality varies.** Tracks that YouTube auto-generates from official releases ("Artist - Topic" channels) have exact title, artists and release year. For official music videos, the bot asks YouTube Music's internal API for the song and looks up its auto-generated track (1 more quota unit). For other videos, artist and title are guessed from the video title and channel name, and the release year is taken from the other platforms.
+- **YouTube Music albums and music videos use an unofficial API.** The YouTube Data API's search doesn't return albums and knows nothing about the songs in music videos, so album searches, `browse/MPREb_…` links and music video lookups go through InnerTube, the internal API of the YouTube Music website. It needs no key and costs no quota, but it's undocumented and can change without notice; if it breaks, album replies show "Couldn't search YouTube Music", and music videos fall back to guessing artist and title from the video. The client version it sends is in `internal/platform/youtubemusic/innertube.go` and may need bumping eventually. An album search costs 1 Data API quota unit (for track counts), looking up an album link 3.
 - **YouTube searches are expensive.** Each search costs 100 of the API's 10,000 free daily quota units, so the bot can translate about 100 Apple Music links to YouTube Music per day. Looking up a YouTube Music link costs only 1 unit.
 - **Apple Music searches use the US catalog**, since a YouTube Music link doesn't say which country's catalog to use.
 - **Apple Music search falls back to the website.** The iTunes Search API is missing some releases that are on Apple Music. If it finds no match, the bot searches `music.apple.com` and reads the track IDs from the results page. That page isn't an official API, so this can break if Apple changes it.

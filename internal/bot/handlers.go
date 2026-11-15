@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"errors"
 	"log"
 	"slices"
 	"sync"
@@ -11,8 +12,12 @@ import (
 	"github.com/DonDevCode/music-translator/internal/platform"
 )
 
-// maxLinksPerMessage limits how many links a single message can trigger.
-const maxLinksPerMessage = 3
+// maxLinksPerMessage limits how many replies a single message can trigger.
+const maxLinksPerMessage = 2
+
+// maxVideoLinksPerMessage limits how many video links of a single message
+// are looked up. They count separately, since many videos aren't music.
+const maxVideoLinksPerMessage = 2 // ToDo: Check which values makes sense here, maybe even cap to 1 link per message
 
 // linkTimeout bounds the time spent resolving one link on all platforms.
 const linkTimeout = 10 * time.Second
@@ -33,7 +38,7 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 	// Links are independent, so they are resolved concurrently, but the
 	// replies are sent in the order the links appear.
 	// Album links are skipped while no other platform can search for albums.
-	links := slices.DeleteFunc(platform.FindLinks(m.Content, b.platforms, maxLinksPerMessage),
+	links := slices.DeleteFunc(platform.FindLinks(m.Content, b.platforms, maxLinksPerMessage, maxVideoLinksPerMessage),
 		func(link platform.Link) bool { return len(b.targets(link)) == 0 })
 	replies := make([]string, len(links))
 	errs := make([]error, len(links))
@@ -48,10 +53,25 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 	wg.Wait()
 
 	sentRateLimits := map[string]bool{}
+	sent := 0
 	for i, link := range links {
+		if sent >= maxLinksPerMessage {
+			break
+		}
 		reply, err := replies[i], errs[i]
+		// Videos that aren't music, or that no other platform has, are
+		// expected and ignored.
+		if errors.Is(err, platform.ErrNotMusic) || errors.Is(err, errNoMatch) {
+			continue
+		}
 		if err != nil {
 			log.Printf("Looking up %s %s %s: %v", link.Platform.Name(), kindName(link.Kind), link.ID, err)
+
+			// A video that couldn't be looked up may well not be music, so
+			// users aren't told, not even about rate limits.
+			if link.Kind == platform.KindVideo {
+				continue
+			}
 
 			// Tell users why the bot didn't answer, with at most one such
 			// notice per API and message. Replies to other links may still
@@ -65,6 +85,7 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 			reply = rateLimitErr.Error()
 		}
 
+		sent++
 		_, err = s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
 			Content:   reply,
 			Reference: m.Reference(),
@@ -78,8 +99,11 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 }
 
 func kindName(k platform.Kind) string {
-	if k == platform.KindAlbum {
+	switch k {
+	case platform.KindAlbum:
 		return "album"
+	case platform.KindVideo:
+		return "video"
 	}
 	return "track"
 }

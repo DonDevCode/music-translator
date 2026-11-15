@@ -8,14 +8,16 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/DonDevCode/music-translator/internal/platform"
 )
 
 // The YouTube Data API can't search for albums or resolve album page links,
-// so these use InnerTube, the internal API of the YouTube Music website. It
-// needs no key and costs no quota, but it is undocumented and may change.
+// and knows nothing about the songs in music videos, so these use InnerTube,
+// the internal API of the YouTube Music website. It needs no key and costs no
+// quota, but it is undocumented and may change.
 const (
 	defaultInnerTubeURL = "https://music.youtube.com/youtubei/v1"
 	// innerTubeClientVersion is a version of the YouTube Music web client.
@@ -26,6 +28,15 @@ const (
 	albumsFilter = "EgWKAQIYAWoKEAkQBRAKEAMQBA%3D%3D"
 	// songsFilter limits a search to songs, like the "Songs" chip.
 	songsFilter = "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"
+)
+
+// Video types that YouTube Music distinguishes. All other videos, music or
+// not, are MUSIC_VIDEO_TYPE_UGC.
+const (
+	// musicVideoType is an official music video.
+	musicVideoType = "MUSIC_VIDEO_TYPE_OMV"
+	// audioTrackType is a track auto-generated from a release.
+	audioTrackType = "MUSIC_VIDEO_TYPE_ATV"
 )
 
 // The language and country of the results. Album types ("Album", "Single")
@@ -67,16 +78,7 @@ type innerTubeSearchResponse struct {
 type listItem struct {
 	FlexColumns []struct {
 		Column struct {
-			Text struct {
-				Runs []struct {
-					Text     string `json:"text"`
-					Endpoint struct {
-						Browse struct {
-							BrowseID string `json:"browseId"`
-						} `json:"browseEndpoint"`
-					} `json:"navigationEndpoint"`
-				} `json:"runs"`
-			} `json:"text"`
+			Text runs `json:"text"`
 		} `json:"musicResponsiveListItemFlexColumnRenderer"`
 	} `json:"flexColumns"`
 	Overlay struct {
@@ -87,11 +89,36 @@ type listItem struct {
 						WatchPlaylist struct {
 							PlaylistID string `json:"playlistId"`
 						} `json:"watchPlaylistEndpoint"`
+						Watch struct {
+							VideoID string `json:"videoId"`
+						} `json:"watchEndpoint"`
 					} `json:"playNavigationEndpoint"`
 				} `json:"musicPlayButtonRenderer"`
 			} `json:"content"`
 		} `json:"musicItemThumbnailOverlayRenderer"`
 	} `json:"overlay"`
+}
+
+// runs is text made of runs, which are separate so that they can link to
+// different pages.
+type runs struct {
+	Runs []struct {
+		Text     string `json:"text"`
+		Endpoint struct {
+			Browse struct {
+				BrowseID string `json:"browseId"`
+			} `json:"browseEndpoint"`
+		} `json:"navigationEndpoint"`
+	} `json:"runs"`
+}
+
+// String returns the whole text.
+func (r runs) String() string {
+	var b strings.Builder
+	for _, run := range r.Runs {
+		b.WriteString(run.Text)
+	}
+	return b.String()
 }
 
 type innerTubeBrowseResponse struct {
@@ -100,6 +127,58 @@ type innerTubeBrowseResponse struct {
 			URLCanonical string `json:"urlCanonical"`
 		} `json:"microformatDataRenderer"`
 	} `json:"microformat"`
+}
+
+type innerTubeNextResponse struct {
+	Contents struct {
+		Renderer struct {
+			Tabbed struct {
+				Results struct {
+					Tabs []struct {
+						TabRenderer struct {
+							Content struct {
+								Queue struct {
+									Content struct {
+										Panel struct {
+											Contents []struct {
+												Video panelVideo `json:"playlistPanelVideoRenderer"`
+											} `json:"contents"`
+										} `json:"playlistPanelRenderer"`
+									} `json:"content"`
+								} `json:"musicQueueRenderer"`
+							} `json:"content"`
+						} `json:"tabRenderer"`
+					} `json:"tabs"`
+				} `json:"watchNextTabbedResultsRenderer"`
+			} `json:"tabbedRenderer"`
+		} `json:"singleColumnMusicWatchNextResultsRenderer"`
+	} `json:"contents"`
+}
+
+// panelVideo is a video in the queue of the player: the title and, in the
+// byline, "Artist • 2.1B views • 14M likes" for music videos and
+// "Artist • Album • 1987" for tracks.
+type panelVideo struct {
+	VideoID  string `json:"videoId"`
+	Title    runs   `json:"title"`
+	Byline   runs   `json:"longBylineText"`
+	Endpoint struct {
+		Watch struct {
+			Configs struct {
+				Music struct {
+					VideoType string `json:"musicVideoType"`
+				} `json:"watchEndpointMusicConfig"`
+			} `json:"watchEndpointMusicSupportedConfigs"`
+		} `json:"watchEndpoint"`
+	} `json:"navigationEndpoint"`
+}
+
+// watchVideo is what the YouTube Music website knows about a video.
+type watchVideo struct {
+	videoType string
+	// track is the song, or nil if the video is neither a music video nor a
+	// track.
+	track *platform.Track
 }
 
 // artistSeparatorPattern separates the artists in a search result row.
@@ -181,25 +260,18 @@ func parseListItem(item listItem) (foundAlbum, bool) {
 		return foundAlbum{}, false
 	}
 
-	var title strings.Builder
-	for _, run := range item.FlexColumns[0].Column.Text.Runs {
-		title.WriteString(run.Text)
-	}
+	title := item.FlexColumns[0].Column.Text.String()
 
 	// Multiple artists are separate runs, joined by ", " and " & " runs, so
 	// the runs are joined before splitting at the " • " separators. The
 	// artists are then split again, because other platforms may list them in
 	// another order.
-	var details strings.Builder
-	for _, run := range item.FlexColumns[1].Column.Text.Runs {
-		details.WriteString(run.Text)
-	}
-	parts := strings.Split(details.String(), " • ")
+	parts := strings.Split(item.FlexColumns[1].Column.Text.String(), " • ")
 	if len(parts) < 2 || !albumTypes[parts[0]] {
 		return foundAlbum{}, false
 	}
 
-	a := &platform.Album{Title: title.String(), Artists: artistSeparatorPattern.Split(parts[1], -1), URL: albumURL(id)}
+	a := &platform.Album{Title: title, Artists: artistSeparatorPattern.Split(parts[1], -1), URL: albumURL(id)}
 	if len(parts) > 2 {
 		a.Year = platform.ParseYear(parts[len(parts)-1])
 	}
@@ -214,10 +286,9 @@ func parseSongItem(item listItem) (foundAlbum, bool) {
 		return foundAlbum{}, false
 	}
 
-	var details strings.Builder
+	details := item.FlexColumns[1].Column.Text
 	var a foundAlbum
-	for _, run := range item.FlexColumns[1].Column.Text.Runs {
-		details.WriteString(run.Text)
+	for _, run := range details.Runs {
 		if id := run.Endpoint.Browse.BrowseID; browseIDPattern.MatchString(id) {
 			a = foundAlbum{id: id, album: &platform.Album{Title: run.Text}}
 		}
@@ -228,6 +299,88 @@ func parseSongItem(item listItem) (foundAlbum, bool) {
 	}
 	a.album.Artists = artistSeparatorPattern.Split(artists, -1)
 	return a, true
+}
+
+// parseSongTrack returns the video ID and track of a song search result
+// row, or false if the row has no video. The year is unknown.
+func parseSongTrack(item listItem) (string, *platform.Track, bool) {
+	id := item.Overlay.Renderer.Content.PlayButton.Endpoint.Watch.VideoID
+	if !videoIDPattern.MatchString(id) || len(item.FlexColumns) < 2 {
+		return "", nil, false
+	}
+
+	title := item.FlexColumns[0].Column.Text.String()
+	artists, _, _ := strings.Cut(item.FlexColumns[1].Column.Text.String(), " • ")
+	if title == "" || artists == "" {
+		return "", nil, false
+	}
+	return id, &platform.Track{Title: title, Artists: artistSeparatorPattern.Split(artists, -1), URL: trackURL(id)}, true
+}
+
+// watchInfo asks the YouTube Music website what the video with the given ID
+// is. It returns nil if the website doesn't know the video.
+func (c *Client) watchInfo(ctx context.Context, id string) (*watchVideo, error) {
+	var body innerTubeNextResponse
+	if err := c.innerTube(ctx, "/next", map[string]any{"videoId": id}, &body); err != nil {
+		return nil, err
+	}
+
+	for _, tab := range body.Contents.Renderer.Tabbed.Results.Tabs {
+		for _, item := range tab.TabRenderer.Content.Queue.Content.Panel.Contents {
+			if item.Video.VideoID == id {
+				return parsePanelVideo(item.Video), nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+// parsePanelVideo returns what the player queue says about a video. For
+// music videos and tracks, the artists are the runs before the first " • ",
+// except for the ", " and " & " runs between them, so that names containing
+// "&" stay whole.
+func parsePanelVideo(v panelVideo) *watchVideo {
+	w := &watchVideo{videoType: v.Endpoint.Watch.Configs.Music.VideoType}
+	if w.videoType != musicVideoType && w.videoType != audioTrackType {
+		return w
+	}
+
+	t := &platform.Track{Title: strings.TrimSpace(tagPattern.ReplaceAllString(v.Title.String(), ""))}
+
+	var parts []string
+	for _, run := range v.Byline.Runs {
+		switch {
+		case run.Text == " • ":
+			parts = append(parts, "")
+		case len(parts) > 0:
+			parts[len(parts)-1] += run.Text
+		case run.Text != ", " && run.Text != " & ":
+			t.Artists = append(t.Artists, run.Text)
+		}
+	}
+	// Tracks end with the year, music videos with view and like counts.
+	if w.videoType == audioTrackType && len(parts) >= 2 {
+		t.Year = platform.ParseYear(parts[len(parts)-1])
+	}
+
+	// Some music videos keep their video title, "Artist, Artist - Song",
+	// with only the uploader in the byline. The title is only split if the
+	// part before the separator names a byline artist, since song titles
+	// can contain " - " too.
+	if loc := separatorPattern.FindStringIndex(t.Title); w.videoType == musicVideoType && loc != nil && namesAny(t.Title[:loc[0]], t.Artists) {
+		t.Artists = artistSeparatorPattern.Split(t.Title[:loc[0]], -1)
+		t.Title = strings.TrimSpace(t.Title[loc[1]:])
+	}
+
+	if t.Title != "" && len(t.Artists) > 0 {
+		w.track = t
+	}
+	return w
+}
+
+// namesAny reports whether s names any of the artists as whole words.
+func namesAny(s string, artists []string) bool {
+	return slices.ContainsFunc(artists, func(a string) bool { return platform.ContainsName(s, a) })
 }
 
 // resolveBrowseID returns the playlist ID of the album page with the given

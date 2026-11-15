@@ -146,6 +146,13 @@ func words(s string) []string {
 	return ws
 }
 
+// ContainsName reports whether name appears in s as whole words, ignoring
+// case and punctuation, so "Sia" is in "Sia - Chandelier" but not in "Asian
+// Dub". An empty name is in nothing.
+func ContainsName(s, name string) bool {
+	return containsWords(words(s), words(name))
+}
+
 // containsWords reports whether sub appears as a contiguous run of words in s.
 func containsWords(s, sub []string) bool {
 	if len(sub) == 0 {
