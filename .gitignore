@@ -9,3 +9,6 @@ __debug_bin*
 # Editor
 .vscode/
 .idea/
+
+# Per-server settings
+/data/

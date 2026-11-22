@@ -20,19 +20,40 @@ Examples are available [here](./docs/examples.md)
 
 1. Create an application and bot at <https://discord.com/developers/applications> and enable the **Message Content** intent.
 2. Create a YouTube Data API v3 key in the [Google Cloud Console](https://console.cloud.google.com/apis/library/youtube.googleapis.com).
-3. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` and `YOUTUBE_API_KEY`. Without `YOUTUBE_API_KEY` YouTube Music is disabled, which leaves the bot with no platform to translate to until another one is added.
+3. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` and `YOUTUBE_API_KEY`. Without `YOUTUBE_API_KEY` YouTube Music is disabled, which leaves the bot with no platform to translate to until another one is added. Per-server settings are saved to `DATA_PATH` (default `data/settings.json`); keep that file on persistent storage, e.g. a volume when running in a container.
 4. Run with [just](https://github.com/casey/just), which loads `.env` automatically:
    ```sh
    just run
    ```
    Other recipes: `just build`, `just test`, `just lint`, `just tidy`.
 
+## Server modes
+
+Each server chooses how the bot answers song links. Members with **Manage Server** manage it with `/translator`; admins can allow other roles in Server Settings → Integrations.
+
+| Mode | Behavior |
+|---|---|
+| Auto | Translates every song link right away. |
+| On Request | Adds 🎵 to song links and translates them when someone clicks it. |
+| Channel Bound | Translates only in channels chosen with `/translator channel set`. |
+
+- `/translator mode <mode>` sets the mode for the whole server.
+- `/translator channel set <channel> [behavior]` makes a channel Auto, On Request or Off regardless of the mode, e.g. Auto in `#music` and On Request everywhere else. Threads and forum posts use the setting of their channel unless they have their own.
+- `/translator channel remove <channel>` makes a channel follow the mode again.
+- `/translator status` shows the mode, the channel settings and permissions the bot is missing.
+- Anyone can right-click a message and choose **Apps → Translate song links** to translate it in any mode, also where the bot is off.
+
+Servers that had the bot before modes existed start in Auto. Servers that add it later start in On Request. DMs are always answered right away.
+
+In On Request mode the bot's own 🎵 reaction marks a message as not translated yet. It is removed on the first click, so later clicks do nothing, also after a restart. If a lookup hits an API rate limit, the reaction is added back so the request can be retried. For messages with only YouTube video links, the bot first checks whether a video is music (1 quota unit) and only reacts then; translating it later looks the video up again. The bot needs **Add Reactions** and **Read Message History** for this mode.
+
 ## Layout
 
 ```
 main.go             entry point
 internal/config/    environment-based configuration
-internal/bot/       Discord session and event handlers
+internal/bot/       Discord session, event handlers and slash commands
+internal/settings/  per-server modes, stored in a JSON file
 internal/platform/  music platform abstraction and link detection
   applemusic/       Apple Music (iTunes Search/Lookup API + website search, no credentials)
   youtubemusic/     YouTube Music and YouTube videos (YouTube Data API v3 + YouTube Music's internal API for albums and music videos)
